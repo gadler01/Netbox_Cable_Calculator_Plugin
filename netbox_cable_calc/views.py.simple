@@ -1,0 +1,177 @@
+import os
+import json
+from django.shortcuts import render
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.views import View
+from django.http import JsonResponse
+from django.conf import settings
+from dcim.models import Rack, Device, Site, Location, CableTermination
+
+MM_TO_IN = 1 / 25.4
+U_HEIGHT = 1.75
+LAYOUT_DIR = os.path.join(os.path.dirname(__file__), "layouts")
+
+IFACE_MAP = {"1000base-t": ("cat6", "RJ45", 1.0)}
+CABLE_TYPE_MAP = {"cat6": ("cat6", "RJ45")}
+MEDIA_STD = {"cat6": [25, 50, 75, 100]}
+
+def _std_len(ft, media):
+    lengths = MEDIA_STD.get(media, [1, 2, 3, 5, 7, 10, 15, 20, 30])
+    return next((l for l in lengths if l >= ft), round(ft + 1))
+
+def _build_rack_index(cfg, site_id=None, location_id=None):
+    racks = Rack.objects.all()
+    if site_id:
+        from django.db.models import Q
+        racks = racks.filter(Q(site_id=site_id))
+    if location_id:
+        racks = racks.filter(location_id=location_id)
+    return {rack.id: {"u_height": rack.u_height} for rack in racks}
+
+def _endpoint_info_from_obj(obj):
+    if obj is None:
+        return None
+    dev = getattr(obj, "device", None) or obj
+    rack = dev.rack
+    if not rack and hasattr(dev, "parent_bay") and dev.parent_bay:
+        rack = dev.parent_bay.device.rack
+    if not rack:
+        return None
+    pos = dev.position or (dev.parent_bay.device.position if hasattr(dev, "parent_bay") and dev.parent_bay else None) or 1
+    return {
+        "device_id": dev.pk, "device_name": dev.name, "rack_id": rack.id,
+        "rack_name": rack.name, "rackU": float(pos), "ru": float(pos),
+        "face": dev.face or "rear",
+    }
+
+def _calc_length(src, dst, rack_index, cfg):
+    rack_depth = float(cfg.get("rack_depth", 48))
+    port_depth = float(cfg.get("port_depth", 4))
+    slack_pct = float(cfg.get("default_slack_pct", 10))
+    
+    if src["rack_id"] == dst["rack_id"]:
+        vert = abs((float(src["rackU"]) - 1) * U_HEIGHT - (float(dst["rackU"]) - 1) * U_HEIGHT)
+        raw_in = vert + port_depth + port_depth
+        raw_ft = raw_in / 12
+        with_slack = raw_ft * (1 + slack_pct / 100)
+        return {
+            "raw_ft": round(raw_ft, 2), "with_slack": round(with_slack, 2),
+            "stock_ft": _std_len(with_slack, "cat6"), "media": "cat6",
+            "same_rack": True, "breakdown": {"vertical": round(vert, 2)},
+        }
+    return {"raw_ft": 0, "with_slack": 0, "stock_ft": 0, "media": "unknown", "same_rack": False, "breakdown": {}}
+
+def _build_cable_bom(cfg, site_id=None, location_id=None):
+    rack_index = _build_rack_index(cfg, site_id, location_id)
+    from django.db.models import Q
+    
+    dev_qs = Device.objects.filter(rack__isnull=False)
+    if site_id:
+        dev_qs = dev_qs.filter(Q(site_id=site_id) | Q(rack__site_id=site_id))
+    if location_id:
+        dev_qs = dev_qs.filter(rack__location_id=location_id)
+    scoped_ids = set(dev_qs.values_list("id", flat=True))
+    
+    terms = CableTermination.objects.select_related("cable").prefetch_related("termination").order_by("cable_id", "cable_end")
+    cable_ends = {}
+    for t in terms:
+        if t.cable_id not in cable_ends:
+            cable_ends[t.cable_id] = {"A": [], "B": [], "cable": t.cable}
+        try:
+            cable_ends[t.cable_id][t.cable_end].append(t.termination)
+        except:
+            pass
+    
+    rows = []
+    for cid, data in cable_ends.items():
+        if not data["A"] or not data["B"]:
+            continue
+        src = _endpoint_info_from_obj(data["A"][0])
+        dst = _endpoint_info_from_obj(data["B"][0])
+        if not src or not dst:
+            continue
+        if src["device_id"] not in scoped_ids and dst["device_id"] not in scoped_ids:
+            continue
+        
+        try:
+            result = _calc_length(src, dst, rack_index, cfg)
+        except:
+            result = {"raw_ft": 0, "with_slack": 0, "stock_ft": 0, "media": "unknown", "breakdown": {}}
+        
+        rows.append({
+            "cable_id": data["cable"].id, "src_device": src["device_name"],
+            "src_rack": src["rack_name"], "src_ru": src["rackU"],
+            "dst_device": dst["device_name"], "dst_rack": dst["rack_name"],
+            "dst_ru": dst["rackU"], **result,
+        })
+    
+    return rows
+
+class CalculatorView(LoginRequiredMixin, View):
+    def get(self, request):
+        import json
+        from django.db.models import Q
+        
+        cfg = settings.PLUGINS_CONFIG.get("netbox_cable_calc", {})
+        
+        # Build site tree with locations
+        sites = Site.objects.all()
+        site_tree = []
+        for site in sites:
+            locations = list(Location.objects.filter(site_id=site.id).values("id", "name"))
+            site_tree.append({
+                "id": site.id,
+                "name": site.name,
+                "locations": locations
+            })
+        
+        # Build rack data index
+        racks = Rack.objects.all().values("id", "name", "site_id", "location_id", "u_height")
+        rack_data = {str(r["id"]): r for r in racks}
+        
+        # Build device data index
+        devices = Device.objects.all().values("id", "name", "rack_id", "position", "site_id")
+        device_data = {}
+        for d in devices:
+            d_copy = dict(d)
+            if d_copy.get("position"):
+                d_copy["position"] = float(d_copy["position"])
+            device_data[str(d["id"])] = d_copy
+        
+        return render(request, "netbox_cable_calc/calculator.html", {
+            "sites": sites,
+            "config": cfg,
+            "rack_data_json": json.dumps(rack_data or {}),
+            "device_data_json": json.dumps(device_data or {}),
+            "plugin_cfg_json": json.dumps(cfg or {}),
+            "site_tree_json": json.dumps(site_tree or []),
+            "selected_site_id": "null",
+            "selected_location_id": "null",
+        })
+
+class BomApiView(View):
+    def get(self, request):
+        site_id = request.GET.get("site_id")
+        location_id = request.GET.get("location_id")
+        try:
+            site_id = int(site_id) if site_id else None
+            location_id = int(location_id) if location_id else None
+        except:
+            site_id, location_id = None, None
+        
+        cfg = settings.PLUGINS_CONFIG.get("netbox_cable_calc", {})
+        bom = _build_cable_bom(cfg, site_id, location_id)
+        return JsonResponse({"bom": bom, "count": len(bom)})
+    
+    def post(self, request):
+        return self.get(request)
+
+class LayoutApiView(View):
+    def get(self, request):
+        location_id = request.GET.get("location_id")
+        if location_id:
+            path = os.path.join(LAYOUT_DIR, f"site_{location_id}.json")
+            if os.path.exists(path):
+                with open(path) as f:
+                    return JsonResponse(json.load(f))
+        return JsonResponse({"error": "Not found"})

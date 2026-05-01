@@ -1,0 +1,16 @@
+setup.py
+netbox_cable_calc/__init__.py
+netbox_cable_calc/urls.py
+netbox_cable_calc/views.py
+netbox_cable_calc.egg-info/PKG-INFO
+netbox_cable_calc.egg-info/SOURCES.txt
+netbox_cable_calc.egg-info/dependency_links.txt
+netbox_cable_calc.egg-info/requires.txt
+netbox_cable_calc.egg-info/top_level.txt
+netbox_cable_calc/api/__init__.py
+netbox_cable_calc/layouts/site_105.json
+netbox_cable_calc/layouts/site_105_loc_125.json
+netbox_cable_calc/layouts/site_105_loc_126.json
+netbox_cable_calc/static/netbox_cable_calc/calculator.bundle.js
+netbox_cable_calc/static/netbox_cable_calc/calculator.js
+netbox_cable_calc/templates/netbox_cable_calc/calculator.html

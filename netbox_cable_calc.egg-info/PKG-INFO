@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: netbox-cable-calc
+Version: 0.1.1
+Summary: Cable length calculator plugin for NetBox
+Author: Graham Adler
+Author-email: gadler@vsolpro.com
+License: Apache-2.0
+Classifier: Framework :: Django
+Classifier: Programming Language :: Python :: 3
+Requires-Dist: netbox
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: license
+Dynamic: requires-dist
+Dynamic: summary
