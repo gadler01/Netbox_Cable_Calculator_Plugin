@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+
+# JS build
+ui/node_modules/
+ui/dist/
+
+# Compiled static (built artifact, not source)
+netbox_cable_calc/static/netbox_cable_calc/calculator.bundle.js
+
+# Layout data (runtime-generated, not source)
+netbox_cable_calc/layouts/*.json
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Gunicorn / runtime
+*.pid
+*.log
