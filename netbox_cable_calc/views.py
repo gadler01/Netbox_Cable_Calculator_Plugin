@@ -9,7 +9,6 @@ from django.views import View
 from django.http import JsonResponse
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
-from netbox.plugins import get_plugin_config
 from dcim.models import Rack, Device, Interface, Site, Location
 
 MM_TO_IN = 1 / 25.4
@@ -347,7 +346,45 @@ def _build_cable_bom(cfg, site_id=None, location_id=None):
         dev_qs = dev_qs.filter(rack__location_id=location_id)
     scoped_device_ids = set(dev_qs.values_list("id", flat=True))
 
+    # Get cable IDs that involve at least one scoped device
+    # by querying CableTermination filtered by content type + object_id
+    from django.contrib.contenttypes.models import ContentType
+    from dcim.models import Interface, FrontPort, RearPort, ConsolePort, ConsoleServerPort, PowerPort, PowerOutlet
+
+    # Get content types for device component models
+    device_component_cts = ContentType.objects.get_for_models(
+        Interface, FrontPort, RearPort, ConsolePort, ConsoleServerPort, PowerPort, PowerOutlet
+    ).values()
+    ct_ids = [ct.pk for ct in device_component_cts]
+
+    # Find terminations where the object belongs to a scoped device
+    # We do this by finding cables that have at least one termination
+    # on a device in our scoped set
+    from django.db.models import Q
+    scoped_cable_ids = set(
+        CableTermination.objects
+        .filter(termination_type_id__in=ct_ids)
+        .filter(termination_id__in=list(scoped_device_ids))
+        .values_list("cable_id", flat=True)
+    )
+
+    # Also try matching via Interface/FrontPort etc. on scoped devices
+    # Get all component IDs for scoped devices
+    scoped_component_ids = set()
+    for model in [Interface, FrontPort, RearPort, ConsolePort, ConsoleServerPort, PowerPort, PowerOutlet]:
+        ids = model.objects.filter(device_id__in=scoped_device_ids).values_list("id", flat=True)
+        scoped_component_ids.update(ids)
+
+    scoped_cable_ids2 = set(
+        CableTermination.objects
+        .filter(termination_type_id__in=ct_ids,
+                termination_id__in=scoped_component_ids)
+        .values_list("cable_id", flat=True)
+    )
+    all_scoped_cable_ids = scoped_cable_ids | scoped_cable_ids2
+
     terms = (CableTermination.objects
+             .filter(cable_id__in=all_scoped_cable_ids)
              .select_related("cable")
              .prefetch_related("termination")
              .order_by("cable_id", "cable_end"))
