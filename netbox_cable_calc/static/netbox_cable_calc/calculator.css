@@ -1,0 +1,6 @@
+/* Hide color swatches in BOM table */
+.color-swatch,
+[class*="color-block"],
+[style*="background-color"] {
+    display: none !important;
+}

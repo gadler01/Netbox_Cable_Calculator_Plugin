@@ -2,6 +2,7 @@
 {% load static %}
 {% block title %}Cable Length Calculator{% endblock %}
 {% block content %}
+<link rel="stylesheet" href="{% static 'netbox_cable_calc/calculator.css' %}?v=1">
 <div class="row">
   <div class="col-12">
     <div class="card">
@@ -32,12 +33,27 @@
     location_id: {{ selected_location_id|default:"null" }},
   };
   
-  // Recalculate BOM by adding ?recalculate=true to current URL
   window.recalculateBOM = function() {
     const currentUrl = new URL(window.location.href);
     currentUrl.searchParams.set('recalculate', 'true');
     window.location.href = currentUrl.toString();
   };
+  
+  // Make badges look like plain text
+  function plainTextBadges() {
+    document.querySelectorAll('table .badge').forEach(badge => {
+      badge.style.cssText = 'background: transparent; color: inherit; border: none; padding: 0; border-radius: 0; font-weight: normal; font-size: inherit;';
+    });
+  }
+  
+  // Run every 30ms
+  setInterval(plainTextBadges, 30);
+  
+  const obs = new MutationObserver(plainTextBadges);
+  setTimeout(() => {
+    const root = document.getElementById('cable-calc-root');
+    if (root) obs.observe(root, {childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class']});
+  }, 100);
 </script>
 <script src="{% static 'netbox_cable_calc/calculator.bundle.js' %}?v=2"></script>
 {% endblock %}
