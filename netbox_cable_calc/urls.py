@@ -1,8 +1,12 @@
 from django.urls import path
-from . import views
+from django.views.decorators.csrf import csrf_exempt
+
+def _get_views():
+    from . import views
+    return views
 
 urlpatterns = [
-    path("", views.CalculatorView.as_view(), name="calculator"),
-    path("bom/", views.BomApiView.as_view(),     name="bom-api"),
-    path("layout/",   views.LayoutApiView.as_view(),  name="layout-api"),
+    path("", lambda req, **kw: _get_views().CalculatorView.as_view()(req, **kw), name="calculator"),
+    path("bom/", csrf_exempt(lambda req, **kw: _get_views().BomApiView.as_view()(req, **kw)), name="bom-api"),
+    path("layout/", csrf_exempt(lambda req, **kw: _get_views().LayoutApiView.as_view()(req, **kw)), name="layout-api"),
 ]
