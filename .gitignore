@@ -13,10 +13,11 @@ venv/
 
 # JS build
 ui/node_modules/
-ui/dist/
 
-# Compiled static (built artifact, not source)
-netbox_cable_calc/static/netbox_cable_calc/calculator.bundle.js
+# calculator.bundle.js is intentionally committed: it's the build output
+# consumed at runtime, and NetBox hosts generally don't have Node available
+# to build it during `pip install`. Run `npm run build` in ui/ and commit
+# the result whenever ui/src changes — see README.
 
 # Layout data (runtime-generated, not source)
 netbox_cable_calc/layouts/*.json

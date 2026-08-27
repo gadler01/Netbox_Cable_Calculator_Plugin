@@ -2,7 +2,7 @@ const path = require("path");
 module.exports = {
   entry: "./src/index.jsx",
   output: {
-    path: path.resolve(__dirname, "dist"),
+    path: path.resolve(__dirname, "../netbox_cable_calc/static/netbox_cable_calc"),
     filename: "calculator.bundle.js",
     library: { type: "umd" },
   },

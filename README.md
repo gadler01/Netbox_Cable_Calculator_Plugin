@@ -15,17 +15,23 @@ A NetBox plugin for calculating cable lengths during datacenter migrations, with
 
 ## Installation
 
-1. Clone into NetBox plugins directory:
+The compiled frontend (`calculator.bundle.js`) ships committed in the repo, so a
+plain install needs only Python — no Node.js required on the NetBox host.
+
+1. Clone into NetBox's plugins directory:
 ```bash
 cd /opt/netbox/netbox/plugins
 git clone https://github.com/gadler01/Netbox_Cable_Calculator_Plugin.git netbox_cable_calc
 cd netbox_cable_calc
 ```
 
-2. Install:
+2. Run the install script (installs into the NetBox venv; pass a different venv
+   path as an argument if yours isn't at `/opt/netbox/venv`):
 ```bash
-/opt/netbox/venv/bin/pip install . --no-deps
+./install_plugin.sh
 ```
+   This installs the package and prints the `configuration.py` block and
+   restart command below.
 
 3. Add to `configuration.py`:
 ```python
@@ -48,6 +54,23 @@ PLUGINS_CONFIG = {
 ```bash
 sudo systemctl restart netbox netbox-rq
 ```
+
+## Frontend development
+
+The UI (`ui/src/*.jsx`) is a React app built with webpack into
+`netbox_cable_calc/static/netbox_cable_calc/calculator.bundle.js`, which is
+what actually ships and gets served. If you change anything under `ui/src`,
+rebuild the bundle and commit the result — the running plugin only ever
+reads the compiled file, never the JSX source directly:
+
+```bash
+cd ui
+npm install
+npm run build
+git add ../netbox_cable_calc/static/netbox_cable_calc/calculator.bundle.js*
+```
+
+Requires Node.js 18+. Use `npm run dev` for a watch build while iterating.
 
 ## Usage
 
