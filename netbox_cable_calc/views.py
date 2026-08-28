@@ -108,15 +108,21 @@ def _rack_width_in(rack, cfg):
                 return val * MM_TO_IN if unit == "mm" else val
             except (TypeError, ValueError):
                 pass
+    # Fall back to rack's own width field (19 or 23 inches) + 0.3in for side clearance
+    if rack.width:
+        return float(rack.width) + 0.3
     return default
 
 def _parse_rack_name(name):
-    m = re.match(r"^([A-Za-z]+)[^A-Za-z0-9]*(\d+)$", name.strip())
+    name = name.strip()
+    # Format: 001.002, 001-002, 1.2 — numeric row.position
+    m = re.match(r"^(\d+)[.\-](\d+)$", name)
+    if m:
+        return str(int(m.group(1))), int(m.group(2))
+    # Format: A01, A-01, ROW-01 — letter prefix + number
+    m = re.match(r"^([A-Za-z]+)[^A-Za-z0-9]*(\d+)$", name)
     if m:
         return m.group(1).upper(), int(m.group(2))
-    digits = re.sub(r"\D", "", name.strip())
-    if len(digits) > 1:
-        return digits[0], int(digits[1:])
     return None, None
 
 def _load_layout_file(site_id, location_id=None):
@@ -264,7 +270,7 @@ def _build_rack_data(cfg, site_id=None, location_id=None):
     rack_index, _ = _build_rack_index(cfg, site_id, location_id)
     return list(rack_index.values())
 
-def _build_device_data(site_id=None, location_id=None):
+def _build_device_data(cfg=None, site_id=None, location_id=None):
     qs = (Device.objects
           .select_related("rack", "rack__site", "rack__location", "device_type")
           .filter(rack__isnull=False)
@@ -281,10 +287,14 @@ def _build_device_data(site_id=None, location_id=None):
     result = []
     for dev in qs:
         iface = Interface.objects.filter(device=dev).exclude(type="virtual").first()
+        role_slug = dev.role.slug if dev.role else ""
+        front_exit = role_slug in cfg.get("front_exit_roles", []) if cfg else False
         result.append({
             "id": dev.pk, "name": dev.name or f"device-{dev.pk}",
             "rack_id": dev.rack_id, "rack_name": dev.rack.name if dev.rack else "",
             "position": dev.position or 1, "face": dev.face or "rear",
+            "exit_face": "front" if front_exit else "rear",
+            "role": role_slug,
             "iface_type": iface.type if iface else "1000base-t",
         })
     return result
@@ -434,12 +444,27 @@ def _calc_length(src, dst, rack_index, cfg, bridge_graph=None):
 
 # ── cable termination helpers ─────────────────────────────────────────────────
 
-def _endpoint_info_from_obj(obj):
+def _endpoint_info_from_obj(obj, cfg=None):
     if obj is None:
         return None
     dev = getattr(obj, "device", None)
     if dev is None or dev.rack is None:
         return None
+
+    # Determine cable exit face from device role, not mounting face
+    exit_face = "rear"  # default
+    if cfg:
+        role_slug = dev.role.slug if dev.role else ""
+        front_roles = cfg.get("front_exit_roles", [])
+        rear_roles  = cfg.get("rear_exit_roles", [])
+        default     = cfg.get("default_exit_face", "rear")
+        if role_slug in front_roles:
+            exit_face = "front"
+        elif role_slug in rear_roles:
+            exit_face = "rear"
+        else:
+            exit_face = default
+
     iface_type = getattr(obj, "type", "1000base-t") or "1000base-t"
     iface_name = getattr(obj, "name", "") or ""
     port_type  = getattr(obj, "type", "") or ""
@@ -450,7 +475,7 @@ def _endpoint_info_from_obj(obj):
         "rack_name":   dev.rack.name if dev.rack else "",
         "ru":          float(dev.position or 1),
         "rackU":       float(dev.rack.u_height) if dev.rack else 42.0,
-        "face":        dev.face or "rear",
+        "face":        exit_face,
         "iface_type":  iface_type,
         "iface_name":  iface_name,
         "port_type":   port_type,
@@ -530,8 +555,8 @@ def _build_cable_bom(cfg, site_id=None, location_id=None):
         a_objs = data["A"]; b_objs = data["B"]; cable = data["cable"]
         if not a_objs or not b_objs:
             continue
-        src_info = _endpoint_info_from_obj(a_objs[0])
-        dst_info = _endpoint_info_from_obj(b_objs[0])
+        src_info = _endpoint_info_from_obj(a_objs[0], cfg)
+        dst_info = _endpoint_info_from_obj(b_objs[0], cfg)
         if src_info is None or dst_info is None:
             continue
         if (src_info["device_id"] not in scoped_device_ids and
@@ -604,6 +629,7 @@ class CalculatorView(LoginRequiredMixin, View):
             "fiber_overhead", "fiber_bridge_length",
             "copper_overhead", "copper_bridge_length",
             "aisle_width", "rack_depth", "port_depth", "default_slack_pct",
+            "front_exit_roles", "rear_exit_roles", "default_exit_face",
         ]}
         site_id     = request.GET.get("site_id") or None
         location_id = request.GET.get("location_id") or None
@@ -612,7 +638,7 @@ class CalculatorView(LoginRequiredMixin, View):
 
         return render(request, self.template_name, {
             "rack_data_json":       _dumps(_build_rack_data(cfg, site_id, location_id)),
-            "device_data_json":     _dumps(_build_device_data(site_id, location_id)),
+            "device_data_json":     _dumps(_build_device_data(cfg, site_id, location_id)),
             "plugin_cfg_json":      _dumps(cfg),
             "site_tree_json":       _dumps(_build_site_tree()),
             "selected_site_id":     site_id,
@@ -680,6 +706,7 @@ class BomApiView(LoginRequiredMixin, View):
             "fiber_overhead", "fiber_bridge_length",
             "copper_overhead", "copper_bridge_length",
             "aisle_width", "rack_depth", "port_depth", "default_slack_pct",
+            "front_exit_roles", "rear_exit_roles", "default_exit_face",
         ]}
         
         site_id     = request.GET.get("site_id") or None
