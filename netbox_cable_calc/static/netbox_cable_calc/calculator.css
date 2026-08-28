@@ -4,3 +4,14 @@
 [style*="background-color"] {
     display: none !important;
 }
+
+/* Make badges in the BOM table read as plain text, not status pills */
+table .badge {
+    background: transparent !important;
+    color: inherit !important;
+    border: none !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+    font-weight: normal !important;
+    font-size: inherit !important;
+}
