@@ -5,14 +5,13 @@ setup(
     description="Cable length calculator plugin for NetBox",
     author="Graham Adler",
     author_email="gadler@vsolpro.com",
-    license="Apache-2.0",
+    license="MIT",
     packages=find_packages(),
     include_package_data=True,
     package_data={
         "netbox_cable_calc": [
             "templates/netbox_cable_calc/*.html",
-            "static/netbox_cable_calc/*.js",
-            "layouts/*.json",
+            "static/netbox_cable_calc/*",
         ],
     },
     install_requires=[],

@@ -108,87 +108,169 @@ def _rack_width_in(rack, cfg):
                 return val * MM_TO_IN if unit == "mm" else val
             except (TypeError, ValueError):
                 pass
+    # Fall back to rack's own width field (19 or 23 inches) + 0.3in for side clearance
+    if rack.width:
+        return float(rack.width) + 0.3
     return default
 
 def _parse_rack_name(name):
-    m = re.match(r"^([A-Za-z]+)[^A-Za-z0-9]*(\d+)$", name.strip())
+    name = name.strip()
+    # Format: 001.002, 001-002, 1.2 — numeric row.position
+    m = re.match(r"^(\d+)[.\-](\d+)$", name)
+    if m:
+        return str(int(m.group(1))), int(m.group(2))
+    # Format: A01, A-01, ROW-01 — letter prefix + number
+    m = re.match(r"^([A-Za-z]+)[^A-Za-z0-9]*(\d+)$", name)
     if m:
         return m.group(1).upper(), int(m.group(2))
-    digits = re.sub(r"\D", "", name.strip())
-    if len(digits) > 1:
-        return digits[0], int(digits[1:])
     return None, None
 
+def _load_layout_file(site_id, location_id=None):
+    """Load one saved floorplan file. Returns (layout_dict_or_None, bridges_list)."""
+    path = _layout_path(site_id, location_id)
+    if not os.path.exists(path):
+        return None, []
+    try:
+        with open(path, 'r') as f:
+            data = json.load(f)
+        return (data.get('layout') or None), (data.get('bridges') or [])
+    except Exception:
+        return None, []
+
+
+def _load_scoped_layout(site_id, location_id):
+    """
+    Rows/rackPositions are saved per location, but a site-wide BOM needs all
+    of them merged (plus the site-level bridges that connect rows across
+    locations) so cross-location cables can be resolved.
+    Returns (rows_list, rack_positions_dict, bridges_list).
+    """
+    if location_id:
+        layout, bridges = _load_layout_file(site_id, location_id)
+        return (layout or {}).get('rows', []), (layout or {}).get('rackPositions', {}), bridges
+
+    rows, rack_positions, bridges_by_id = [], {}, {}
+
+    site_layout, site_bridges = _load_layout_file(site_id, None)
+    rows += (site_layout or {}).get('rows', [])
+    rack_positions.update((site_layout or {}).get('rackPositions', {}))
+    for b in site_bridges:
+        bridges_by_id[b.get('id') or id(b)] = b
+
+    for loc_id in Location.objects.filter(site_id=site_id).values_list('id', flat=True):
+        loc_layout, loc_bridges = _load_layout_file(site_id, loc_id)
+        if loc_layout:
+            rows += loc_layout.get('rows', [])
+            rack_positions.update(loc_layout.get('rackPositions', {}))
+        for b in loc_bridges:
+            bridges_by_id[b.get('id') or id(b)] = b
+
+    return rows, rack_positions, list(bridges_by_id.values())
+
+
+def _build_bridge_graph(bridges):
+    graph = {}
+    for b in bridges:
+        row_a, row_b = b.get('rowIdA'), b.get('rowIdB')
+        if not row_a or not row_b:
+            continue
+        length = float(b.get('lengthIn', 0) or 0)
+        x = float(b.get('x', 0) or 0)
+        graph.setdefault(row_a, []).append((row_b, length, x))
+        graph.setdefault(row_b, []).append((row_a, length, x))
+    return graph
+
+
+def _bridge_path(graph, row_a, row_b):
+    """Dijkstra shortest path by lengthIn. Returns a list of (length, x) edges, or None."""
+    if row_a not in graph or row_b not in graph:
+        return None
+    import heapq
+    seen = set()
+    heap = [(0.0, row_a, [])]
+    while heap:
+        dist, node, path = heapq.heappop(heap)
+        if node in seen:
+            continue
+        seen.add(node)
+        if node == row_b:
+            return path
+        for neighbor, length, x in graph.get(node, []):
+            if neighbor not in seen:
+                heapq.heappush(heap, (dist + length, neighbor, path + [(length, x)]))
+    return None
+
+
 def _build_rack_index(cfg, site_id=None, location_id=None):
-    """Build rack index with layout data if available"""
+    """Build rack index with layout data if available. Returns (index_dict, bridges_list)."""
     qs = Rack.objects.select_related("site", "location").all()
     if site_id:
         qs = qs.filter(site_id=site_id)
     if location_id:
         qs = qs.filter(location_id=location_id)
 
-    # Try to load saved layout
-    layout_data = None
+    rows, rack_positions, bridges = [], {}, []
     if site_id:
-        layout_path = _layout_path(site_id, location_id)
-        if os.path.exists(layout_path):
-            try:
-                with open(layout_path, 'r') as f:
-                    layout_file = json.load(f)
-                    layout_data = layout_file.get('layout', {})
-            except:
-                pass
+        rows, rack_positions, bridges = _load_scoped_layout(site_id, location_id)
+    row_index_by_id = {row_def.get('id'): idx for idx, row_def in enumerate(rows)}
 
     rack_list = []
+    unresolved = []  # racks with no floorplan entry — row comes from name-guessing
     for rack in qs:
         width_in = _rack_width_in(rack, cfg)
-        
-        # Try to get row info from layout first
+
         row = None
         pos = 0
         center_offset = 0.0
         row_index = 0
-        
-        if layout_data and 'rackPositions' in layout_data:
-            rack_pos = layout_data['rackPositions'].get(str(rack.pk))
-            if rack_pos:
-                row_id = rack_pos.get('rowId')
-                pos = rack_pos.get('x', 0)
-                
-                # Find row_index from rows array
-                rows = layout_data.get('rows', [])
-                for idx, row_def in enumerate(rows):
-                    if row_def.get('id') == row_id:
-                        row = row_id
-                        row_index = idx
-                        center_offset = float(pos)
-                        break
-        
+
+        rack_pos = rack_positions.get(str(rack.pk))
+        if rack_pos:
+            row_id = rack_pos.get('rowId')
+            pos = rack_pos.get('x', 0)
+            if row_id in row_index_by_id:
+                row = row_id
+                row_index = row_index_by_id[row_id]
+                center_offset = float(pos)
+
         # Fallback to parsing rack name
         if row is None:
             parsed_row, parsed_pos = _parse_rack_name(rack.name)
             row = parsed_row
             pos = parsed_pos if parsed_pos else 0
-        
-        rack_list.append({
+
+        entry = {
             "id": rack.pk, "name": rack.name,
             "u_height": rack.u_height, "width_in": width_in,
             "row": row, "pos": pos,
-            "resolved": row is not None,
+            "resolved": rack_pos is not None,
             "site_id": rack.site_id,
             "site_name": rack.site.name if rack.site else "",
             "location_id": rack.location_id,
             "location_name": rack.location.name if rack.location else "",
             "center_offset": center_offset, "row_index": row_index,
-        })
+        }
+        rack_list.append(entry)
+        if rack_pos is None:
+            unresolved.append(entry)
 
-    return {r["id"]: r for r in rack_list}
+    # Racks outside the saved floorplan still need distinct row_index values
+    # per distinct guessed row, otherwise cross-row distance silently drops to 0.
+    base_index = len(rows)
+    distinct_labels = sorted({e["row"] for e in unresolved if e["row"] is not None})
+    label_index = {label: base_index + i for i, label in enumerate(distinct_labels)}
+    for e in unresolved:
+        if e["row"] in label_index:
+            e["row_index"] = label_index[e["row"]]
+
+    return {r["id"]: r for r in rack_list}, bridges
 
 
 def _build_rack_data(cfg, site_id=None, location_id=None):
-    return list(_build_rack_index(cfg, site_id, location_id).values())
+    rack_index, _ = _build_rack_index(cfg, site_id, location_id)
+    return list(rack_index.values())
 
-def _build_device_data(site_id=None, location_id=None):
+def _build_device_data(cfg=None, site_id=None, location_id=None):
     qs = (Device.objects
           .select_related("rack", "rack__site", "rack__location", "device_type")
           .filter(rack__isnull=False)
@@ -205,10 +287,14 @@ def _build_device_data(site_id=None, location_id=None):
     result = []
     for dev in qs:
         iface = Interface.objects.filter(device=dev).exclude(type="virtual").first()
+        role_slug = dev.role.slug if dev.role else ""
+        front_exit = role_slug in cfg.get("front_exit_roles", []) if cfg else False
         result.append({
             "id": dev.pk, "name": dev.name or f"device-{dev.pk}",
             "rack_id": dev.rack_id, "rack_name": dev.rack.name if dev.rack else "",
             "position": dev.position or 1, "face": dev.face or "rear",
+            "exit_face": "front" if front_exit else "rear",
+            "role": role_slug,
             "iface_type": iface.type if iface else "1000base-t",
         })
     return result
@@ -227,7 +313,7 @@ def _build_site_tree():
 
 # ── cable length calculator ───────────────────────────────────────────────────
 
-def _calc_length(src, dst, rack_index, cfg):
+def _calc_length(src, dst, rack_index, cfg, bridge_graph=None):
     row_spacing = float(cfg.get("aisle_width", 60))
     rack_depth  = float(cfg.get("rack_depth", 48))
     port_depth  = float(cfg.get("port_depth", 4))
@@ -302,11 +388,25 @@ def _calc_length(src, dst, rack_index, cfg):
     else:
         dst_pe = port_depth;  dst_v = dst_rack_u * U_HEIGHT + (float(dst["ru"]) - 1) * U_HEIGHT + overhead
 
-    horiz = abs(float(dst_rack.get("center_offset", 0)) - float(src_rack.get("center_offset", 0)))
-    cross_aisle  = src_rack.get("row") != dst_rack.get("row")
-    rows_crossed = abs(src_rack.get("row_index", 0) - dst_rack.get("row_index", 0))
-    row_travel   = rows_crossed * row_spacing if cross_aisle else 0
-    bridge_total = rows_crossed * bridge_len  if cross_aisle else 0
+    cross_aisle = src_rack.get("row") != dst_rack.get("row")
+    path = _bridge_path(bridge_graph, src_rack.get("row"), dst_rack.get("row")) \
+        if (cross_aisle and bridge_graph) else None
+
+    if path:
+        # Use the floorplan's actual measured bridge run(s): rack -> bridge
+        # point -> ... -> bridge point -> rack, instead of a generic estimate.
+        first_x, last_x = path[0][1], path[-1][1]
+        horiz = (abs(first_x - float(src_rack.get("center_offset", 0))) +
+                 abs(last_x - float(dst_rack.get("center_offset", 0))))
+        bridge_total = sum(length for length, _x in path)
+        row_travel = 0
+        bridge_source = "floorplan"
+    else:
+        horiz = abs(float(dst_rack.get("center_offset", 0)) - float(src_rack.get("center_offset", 0)))
+        rows_crossed = abs(src_rack.get("row_index", 0) - dst_rack.get("row_index", 0))
+        row_travel   = rows_crossed * row_spacing if cross_aisle else 0
+        bridge_total = rows_crossed * bridge_len  if cross_aisle else 0
+        bridge_source = "estimated" if cross_aisle else "n/a"
 
     raw_in = src_v + dst_v + horiz + row_travel + bridge_total + src_pe + dst_pe
     raw_ft = raw_in / 12
@@ -337,18 +437,34 @@ def _calc_length(src, dst, rack_index, cfg):
             "src_vertical": round(src_v, 2), "dst_vertical": round(dst_v, 2),
             "horizontal": round(horiz, 2), "row_travel": round(row_travel, 2),
             "bridge": round(bridge_total, 2), "port_depth": round(src_pe + dst_pe, 2),
+            "bridge_source": bridge_source,
         },
     }
 
 
 # ── cable termination helpers ─────────────────────────────────────────────────
 
-def _endpoint_info_from_obj(obj):
+def _endpoint_info_from_obj(obj, cfg=None):
     if obj is None:
         return None
     dev = getattr(obj, "device", None)
     if dev is None or dev.rack is None:
         return None
+
+    # Determine cable exit face from device role, not mounting face
+    exit_face = "rear"  # default
+    if cfg:
+        role_slug = dev.role.slug if dev.role else ""
+        front_roles = cfg.get("front_exit_roles", [])
+        rear_roles  = cfg.get("rear_exit_roles", [])
+        default     = cfg.get("default_exit_face", "rear")
+        if role_slug in front_roles:
+            exit_face = "front"
+        elif role_slug in rear_roles:
+            exit_face = "rear"
+        else:
+            exit_face = default
+
     iface_type = getattr(obj, "type", "1000base-t") or "1000base-t"
     iface_name = getattr(obj, "name", "") or ""
     port_type  = getattr(obj, "type", "") or ""
@@ -359,7 +475,7 @@ def _endpoint_info_from_obj(obj):
         "rack_name":   dev.rack.name if dev.rack else "",
         "ru":          float(dev.position or 1),
         "rackU":       float(dev.rack.u_height) if dev.rack else 42.0,
-        "face":        dev.face or "rear",
+        "face":        exit_face,
         "iface_type":  iface_type,
         "iface_name":  iface_name,
         "port_type":   port_type,
@@ -367,7 +483,8 @@ def _endpoint_info_from_obj(obj):
 
 def _build_cable_bom(cfg, site_id=None, location_id=None):
     from dcim.models import CableTermination
-    rack_index = _build_rack_index(cfg, site_id, location_id)
+    rack_index, bridges = _build_rack_index(cfg, site_id, location_id)
+    bridge_graph = _build_bridge_graph(bridges)
 
     from django.db.models import Q
     dev_qs = Device.objects.filter(rack__isnull=False)
@@ -438,8 +555,8 @@ def _build_cable_bom(cfg, site_id=None, location_id=None):
         a_objs = data["A"]; b_objs = data["B"]; cable = data["cable"]
         if not a_objs or not b_objs:
             continue
-        src_info = _endpoint_info_from_obj(a_objs[0])
-        dst_info = _endpoint_info_from_obj(b_objs[0])
+        src_info = _endpoint_info_from_obj(a_objs[0], cfg)
+        dst_info = _endpoint_info_from_obj(b_objs[0], cfg)
         if src_info is None or dst_info is None:
             continue
         if (src_info["device_id"] not in scoped_device_ids and
@@ -447,7 +564,7 @@ def _build_cable_bom(cfg, site_id=None, location_id=None):
             continue
         try:
             src_with_cable = {**src_info, "cable_type": cable.type or ""}
-            result = _calc_length(src_with_cable, dst_info, rack_index, cfg)
+            result = _calc_length(src_with_cable, dst_info, rack_index, cfg, bridge_graph)
         except Exception as e:
             result = {
                 "raw_ft": 0, "with_slack": 0, "stock_ft": 0,
@@ -512,6 +629,7 @@ class CalculatorView(LoginRequiredMixin, View):
             "fiber_overhead", "fiber_bridge_length",
             "copper_overhead", "copper_bridge_length",
             "aisle_width", "rack_depth", "port_depth", "default_slack_pct",
+            "front_exit_roles", "rear_exit_roles", "default_exit_face",
         ]}
         site_id     = request.GET.get("site_id") or None
         location_id = request.GET.get("location_id") or None
@@ -520,7 +638,7 @@ class CalculatorView(LoginRequiredMixin, View):
 
         return render(request, self.template_name, {
             "rack_data_json":       _dumps(_build_rack_data(cfg, site_id, location_id)),
-            "device_data_json":     _dumps(_build_device_data(site_id, location_id)),
+            "device_data_json":     _dumps(_build_device_data(cfg, site_id, location_id)),
             "plugin_cfg_json":      _dumps(cfg),
             "site_tree_json":       _dumps(_build_site_tree()),
             "selected_site_id":     site_id,
@@ -588,6 +706,7 @@ class BomApiView(LoginRequiredMixin, View):
             "fiber_overhead", "fiber_bridge_length",
             "copper_overhead", "copper_bridge_length",
             "aisle_width", "rack_depth", "port_depth", "default_slack_pct",
+            "front_exit_roles", "rear_exit_roles", "default_exit_face",
         ]}
         
         site_id     = request.GET.get("site_id") or None
