@@ -465,15 +465,41 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   useEffect(()=>{layoutRef.current=layout;},[layout]);
   useEffect(()=>{bridgesRef.current=bridges;},[bridges]);
 
-  const setLayoutAndSave = (l)=>{
-    setLayout(l); saveLayout(l); layoutRef.current=l;
-    setSaveStatus("saving");
-    saveToServer(l,bridgesRef.current).then(ok=>setSaveStatus(ok?"saved":"error"));
+  const layoutSaveTimer  = useRef(null);
+  const bridgeSaveTimer  = useRef(null);
+
+  // Accepts either a value or a React-style updater function (setLayoutAndSave
+  // is passed to FloorPlan as its setLayout prop, and FloorPlan's drag handler
+  // calls it the same way it would call the real useState setter). Resolving
+  // the updater here - instead of forwarding it straight to saveToServer -
+  // matters: JSON.stringify silently drops function-valued properties, so
+  // passing the raw updater through would POST a body with no "layout" key
+  // at all, and the server would happily write back an empty layout.
+  // The network save is debounced so a drag (many calls per second) doesn't
+  // flood the server with one request per pixel of movement.
+  const setLayoutAndSave = (updater)=>{
+    setLayout(prev=>{
+      const next = typeof updater==="function" ? updater(prev) : updater;
+      saveLayout(next); layoutRef.current=next;
+      setSaveStatus("saving");
+      clearTimeout(layoutSaveTimer.current);
+      layoutSaveTimer.current=setTimeout(()=>{
+        saveToServer(next,bridgesRef.current).then(ok=>setSaveStatus(ok?"saved":"error"));
+      },400);
+      return next;
+    });
   };
-  const setBridgesAndSave = (b)=>{
-    setBridges(b); saveBridges(b); bridgesRef.current=b;
-    setSaveStatus("saving");
-    saveToServer(layoutRef.current,b).then(ok=>setSaveStatus(ok?"saved":"error"));
+  const setBridgesAndSave = (updater)=>{
+    setBridges(prev=>{
+      const next = typeof updater==="function" ? updater(prev) : updater;
+      saveBridges(next); bridgesRef.current=next;
+      setSaveStatus("saving");
+      clearTimeout(bridgeSaveTimer.current);
+      bridgeSaveTimer.current=setTimeout(()=>{
+        saveToServer(layoutRef.current,next).then(ok=>setSaveStatus(ok?"saved":"error"));
+      },400);
+      return next;
+    });
   };
 
   const si=(k,v)=>setInfra(p=>({...p,[k]:v}));
