@@ -441,7 +441,6 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
 }
 
 export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}) {
-  //const rackMap = useMemo(()=>Object.fromEntries(racks.map(r=>[r.id,r])),[racks]);
   const [infra,setInfra]     = useState(()=>infraFromCfg(cfg));
   const [tab,setTab]         = useState("calc");
   const [hops,setHops]       = useState([mkHop("Device to patch panel"),mkHop("Panel to panel cross-connect","10gbase-sr"),mkHop("Patch panel to device")]);
@@ -474,7 +473,6 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   }, [pendingSite, pendingLocation]);
 
   //Filter Racks Based on the selected site and location. This ensures that only racks relevant to the current selection are displayed.
-  
   const filteredRacks = useMemo(() => {
     return racks.filter(r => {
       const siteMatch =
@@ -543,7 +541,6 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
     if(!acc[key]) acc[key]={media:res.media,connector:res.iface.connector,cables:[]};
     acc[key].cables.push(res.rec+" "+res.unit);return acc;
   },{});
-
 
   const SelectedSiteId = pendingSite; //Set the active SiteId from the pending site selection
   const SelectedLocationId = pendingLocation; //Set the activeLocationId from the Pending Location
