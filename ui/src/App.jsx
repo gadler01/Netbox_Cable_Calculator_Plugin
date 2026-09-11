@@ -191,6 +191,8 @@ const FaceToggle = ({value,onChange}) => (
     ))}
   </div>
 );
+//Device Selector used for the manual cable BOM tab, allows user to select source and destination devices and their rack position. 
+
 const DeviceSelector = ({label,value,onChange,devices,rackMap,accent}) => {
   const borderColor=accent==="src"?"#7F77DD":"#1D9E75";
   const dev=devices.find(d=>d.id===value.deviceId);
@@ -490,6 +492,12 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   //RackMap of filtered Racks.
   const rackMap = useMemo(()=>Object.fromEntries(filteredRacks.map(r=>[r.id,r])),[filteredRacks]);
 
+  //Filter Devices Based on the filtered racks. This ensures that only devices located in the relevant racks are considered for calculations.
+  const filteredDevices = useMemo(
+    () => devices.filter(device => rackMap[device.rack_id]),
+    [devices, rackMap]
+  );
+
   //Load layout and bridges from the server when the pending site or location changes. If no layout is found, an automatic layout is generated based on the filtered racks.
   useEffect(()=>{
     setLayout({rows:[],rackPositions:{}});
@@ -547,17 +555,6 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   const locations = useMemo(() => {
     return Array.isArray(currentSite?.locations) ? currentSite.locations : [];
   }, [currentSite]);
-
-  // const currentSite=siteTree.find(s=>s.id===(selected.site_id??null));
-  // const locations=currentSite?.locations??[];
-//Remove function below once working
-/*   function applyScope(){
-    const params=new URLSearchParams();
-    if (pendingSite)     params.set("site_id",pendingSite);
-    if (pendingLocation) params.set("location_id",pendingLocation);
-    window.location.search=params.toString();
-  } */
-
 
   const locationSelectRef = useRef(null); //Create a REF for the location select element
 
@@ -686,8 +683,8 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
                     <div className="text-muted mt-1" style={{fontSize:11}}>Stock lengths: {res.media.stdLengths.map(l=>`${l} ${res.unit}`).join(", ")}</div>
                   </div>
                   <div className="row g-2 mb-3">
-                    <div className="col-6"><DeviceSelector label="From" value={hop.src} onChange={v=>updEp(hop.id,"src",v)} devices={devices} rackMap={rackMap} accent="src"/></div>
-                    <div className="col-6"><DeviceSelector label="To"   value={hop.dst} onChange={v=>updEp(hop.id,"dst",v)} devices={devices} rackMap={rackMap} accent="dst"/></div>
+                    <div className="col-6"><DeviceSelector label="From" value={hop.src} onChange={v=>updEp(hop.id,"src",v)} devices={filteredDevices} rackMap={rackMap} accent="src"/></div>
+                    <div className="col-6"><DeviceSelector label="To"   value={hop.dst} onChange={v=>updEp(hop.id,"dst",v)} devices={filteredDevices} rackMap={rackMap} accent="dst"/></div>
                   </div>
                   {ready&&(
                     <div className="p-2 border rounded">
