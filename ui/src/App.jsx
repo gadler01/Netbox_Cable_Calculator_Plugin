@@ -172,9 +172,9 @@ function printBOM(cables,scopeLabel) {
 
 const Badge = ({color,children}) => {
   const cls={blue:"primary",green:"success",amber:"warning",red:"danger",gray:"secondary"}[color]??color??"primary";
-  return <span className={`badge bg-${cls}`} style={{fontSize:11}}>{children}</span>;
+  return <span className={`badge bg-${cls}`} style={{fontSize:11,color:"#FFFFFF"}}>{children}</span>;
 };
-const Pill = ({children}) => <span className="badge bg-secondary" style={{fontSize:11,fontWeight:500}}>{children}</span>;
+const Pill = ({children}) => <span className="badge bg-secondary" style={{fontSize:11,fontWeight:500,color:"#FFFFFF"}}>{children}</span>;
 const SegBar = ({label,inches,total,col}) => {
   if (!inches) return null;
   const pct=total>0?(inches/total)*100:0;
@@ -340,7 +340,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
         <div className="card mb-3">
           <div className="card-header py-2 fw-bold" style={{fontSize:13}}>
             BOM summary — {displayed.length} of {cables.length} cables
-            {scopeLabel&&<span className="badge bg-primary ms-2" style={{fontWeight:400}}>{scopeLabel}</span>}
+            {scopeLabel&&<span className="badge bg-primary ms-2" style={{fontWeight:400, color:"#FFFFFF"}}>{scopeLabel}</span>}
           </div>
           <div className="card-body p-2">
             <table className="table table-sm table-bordered mb-0" style={{fontSize:12}}>
