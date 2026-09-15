@@ -172,9 +172,9 @@ function printBOM(cables,scopeLabel) {
 
 const Badge = ({color,children}) => {
   const cls={blue:"primary",green:"success",amber:"warning",red:"danger",gray:"secondary"}[color]??color??"primary";
-  return <span className={`badge bg-${cls}`} style={{fontSize:11}}>{children}</span>;
+  return <span className={`badge bg-${cls}`} style={{fontSize:11,color:"#FFFFFF"}}>{children}</span>;
 };
-const Pill = ({children}) => <span className="badge bg-secondary" style={{fontSize:11,fontWeight:500}}>{children}</span>;
+const Pill = ({children}) => <span className="badge bg-secondary" style={{fontSize:11,fontWeight:500,color:"#FFFFFF"}}>{children}</span>;
 const SegBar = ({label,inches,total,col}) => {
   if (!inches) return null;
   const pct=total>0?(inches/total)*100:0;
@@ -191,6 +191,8 @@ const FaceToggle = ({value,onChange}) => (
     ))}
   </div>
 );
+//Device Selector used for the manual cable BOM tab, allows user to select source and destination devices and their rack position. 
+
 const DeviceSelector = ({label,value,onChange,devices,rackMap,accent}) => {
   const borderColor=accent==="src"?"#7F77DD":"#1D9E75";
   const dev=devices.find(d=>d.id===value.deviceId);
@@ -240,7 +242,7 @@ let _id=1;
 const mkEp  = () => ({deviceId:null,deviceName:"",rackId:null,rackName:"",ru:1,rackU:42,face:"rear",row:"?",rowIndex:0,rackCenterOffset:0});
 const mkHop = (label="New segment",ifaceType="1000base-t") => ({id:_id++,label,ifaceType,src:mkEp(),dst:mkEp()});
 
-function BulkBomTab({selected,scopeLabel,cfg}) {
+function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
   const [cables,setCables]   = useState([]);
   const [loading,setLoading] = useState(false);
   const [error,setError]     = useState(null);
@@ -251,21 +253,26 @@ function BulkBomTab({selected,scopeLabel,cfg}) {
   const [sortDir,setSortDir] = useState(1);
 
   const fetchBOM = useCallback(async()=>{
-    setLoading(true);setError(null);setCables([]);
+    setLoading(true);
+    setError(null);
+    setCables([]);
+
     try {
       const params=new URLSearchParams();
-      if (selected.site_id)     params.set("site_id",selected.site_id);
-      if (selected.location_id) params.set("location_id",selected.location_id);
-      const res=await fetch(`/plugins/cable-calc/bom/?${params}`);
+      if (siteId)     params.set("site_id",siteId);
+      if (locationId) params.set("location_id",locationId);
+      const res=await fetch(`/plugins/cable-calc/bom/?${params.toString()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data=await res.json();
       setCables(data.cables??[]);
     } catch(e){setError(e.message);}
     finally{setLoading(false);}
-  },[selected]);
+  },[siteId, locationId]);
 
   const saveToNetBox = useCallback(async()=>{
-    setSaving(true);setSaveMsg(null);
+    setSaving(true);
+    setSaveMsg(null);
+    
     try {
       const lengths={};
       cables.forEach(c=>{lengths[c.cable_id]=c.stock_ft;});
@@ -323,7 +330,7 @@ function BulkBomTab({selected,scopeLabel,cfg}) {
           <button className="btn btn-outline-secondary btn-sm" onClick={()=>printBOM(displayed,scopeLabel)}>Print / PDF</button>
           <button className="btn btn-outline-warning btn-sm" onClick={saveToNetBox} disabled={saving}>{saving?"Saving...":"Save lengths to NetBox"}</button>
         </>)}
-        {!selected.site_id&&<span className="text-warning ms-2" style={{fontSize:12}}>No site selected.</span>}
+        {!siteId&&<span className="text-warning ms-2" style={{fontSize:12}}>No site selected.</span>}
       </div>
 
       {error&&<div className="alert alert-danger py-2">{error}</div>}
@@ -333,7 +340,7 @@ function BulkBomTab({selected,scopeLabel,cfg}) {
         <div className="card mb-3">
           <div className="card-header py-2 fw-bold" style={{fontSize:13}}>
             BOM summary — {displayed.length} of {cables.length} cables
-            {scopeLabel&&<span className="badge bg-primary ms-2" style={{fontWeight:400}}>{scopeLabel}</span>}
+            {scopeLabel&&<span className="badge bg-primary ms-2" style={{fontWeight:400, color:"#FFFFFF"}}>{scopeLabel}</span>}
           </div>
           <div className="card-body p-2">
             <table className="table table-sm table-bordered mb-0" style={{fontSize:12}}>
@@ -434,13 +441,12 @@ function BulkBomTab({selected,scopeLabel,cfg}) {
 }
 
 export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}) {
-  const rackMap = useMemo(()=>Object.fromEntries(racks.map(r=>[r.id,r])),[racks]);
   const [infra,setInfra]     = useState(()=>infraFromCfg(cfg));
   const [tab,setTab]         = useState("calc");
   const [hops,setHops]       = useState([mkHop("Device to patch panel"),mkHop("Panel to panel cross-connect","10gbase-sr"),mkHop("Patch panel to device")]);
   const [expanded,setExpanded] = useState(null);
-  const [pendingSite,setPendingSite]         = useState(selected.site_id??"");
-  const [pendingLocation,setPendingLocation] = useState(selected.location_id??"");
+  const [pendingSite,setPendingSite]         = useState(String(selected.site_id??""));
+  const [pendingLocation,setPendingLocation] = useState(String(selected.location_id??""));
   const [layout,setLayout]   = useState({rows:[],rackPositions:{}});
   const [bridges,setBridges] = useState([]);
   const layoutRef  = useRef({rows:[],rackPositions:{}});
@@ -448,6 +454,49 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   const [layoutReady,setLayoutReady]   = useState(false);
   const [saveStatus,setSaveStatus]     = useState(null);
 
+  //Update the URL parameters when pendingSite or pendingLocation changes. This allows the user to bookmark or share the current site/location selection.
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (pendingSite) {
+      params.set("site_id", pendingSite);
+    }
+    if (pendingLocation) {
+      params.set("location_id", pendingLocation);
+    }
+    const newUrl =
+      params.toString().length > 0
+        ? `${window.location.pathname}?${params.toString()}`
+        : window.location.pathname;
+
+    window.history.replaceState({}, "", newUrl);
+
+  }, [pendingSite, pendingLocation]);
+
+  //Filter Racks Based on the selected site and location. This ensures that only racks relevant to the current selection are displayed.
+  const filteredRacks = useMemo(() => {
+    return racks.filter(r => {
+      const siteMatch =
+        !pendingSite ||
+        String(r.site_id) === String(pendingSite);
+
+      const locationMatch =
+        !pendingLocation ||
+        String(r.location_id) === String(pendingLocation);
+
+      return siteMatch && locationMatch;
+    });
+  }, [racks, pendingSite, pendingLocation]);
+
+  //RackMap of filtered Racks.
+  const rackMap = useMemo(()=>Object.fromEntries(filteredRacks.map(r=>[r.id,r])),[filteredRacks]);
+
+  //Filter Devices Based on the filtered racks. This ensures that only devices located in the relevant racks are considered for calculations.
+  const filteredDevices = useMemo(
+    () => devices.filter(device => rackMap[device.rack_id]),
+    [devices, rackMap]
+  );
+
+  //Load layout and bridges from the server when the pending site or location changes. If no layout is found, an automatic layout is generated based on the filtered racks.
   useEffect(()=>{
     setLayout({rows:[],rackPositions:{}});
     setBridges([]);
@@ -455,51 +504,25 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
       if (data&&data.layout&&data.layout.rows&&data.layout.rows.length>0) {
         setLayout(data.layout); layoutRef.current=data.layout;
         setBridges(data.bridges||[]); bridgesRef.current=data.bridges||[];
-      } else if (racks.length>0) {
-        const auto=autoLayout(racks); setLayout(auto); layoutRef.current=auto;
+      } else if (filteredRacks.length>0) {
+        const auto=autoLayout(filteredRacks); setLayout(auto); layoutRef.current=auto;
       }
       setLayoutReady(true);
     });
-  },[selected.site_id,selected.location_id]);
+  },[filteredRacks]);
 
   useEffect(()=>{layoutRef.current=layout;},[layout]);
   useEffect(()=>{bridgesRef.current=bridges;},[bridges]);
 
-  const layoutSaveTimer  = useRef(null);
-  const bridgeSaveTimer  = useRef(null);
-
-  // Accepts either a value or a React-style updater function (setLayoutAndSave
-  // is passed to FloorPlan as its setLayout prop, and FloorPlan's drag handler
-  // calls it the same way it would call the real useState setter). Resolving
-  // the updater here - instead of forwarding it straight to saveToServer -
-  // matters: JSON.stringify silently drops function-valued properties, so
-  // passing the raw updater through would POST a body with no "layout" key
-  // at all, and the server would happily write back an empty layout.
-  // The network save is debounced so a drag (many calls per second) doesn't
-  // flood the server with one request per pixel of movement.
-  const setLayoutAndSave = (updater)=>{
-    setLayout(prev=>{
-      const next = typeof updater==="function" ? updater(prev) : updater;
-      saveLayout(next); layoutRef.current=next;
-      setSaveStatus("saving");
-      clearTimeout(layoutSaveTimer.current);
-      layoutSaveTimer.current=setTimeout(()=>{
-        saveToServer(next,bridgesRef.current).then(ok=>setSaveStatus(ok?"saved":"error"));
-      },400);
-      return next;
-    });
+  const setLayoutAndSave = (l)=>{
+    setLayout(l); saveLayout(l); layoutRef.current=l;
+    setSaveStatus("saving");
+    saveToServer(l,bridgesRef.current).then(ok=>setSaveStatus(ok?"saved":"error"));
   };
-  const setBridgesAndSave = (updater)=>{
-    setBridges(prev=>{
-      const next = typeof updater==="function" ? updater(prev) : updater;
-      saveBridges(next); bridgesRef.current=next;
-      setSaveStatus("saving");
-      clearTimeout(bridgeSaveTimer.current);
-      bridgeSaveTimer.current=setTimeout(()=>{
-        saveToServer(layoutRef.current,next).then(ok=>setSaveStatus(ok?"saved":"error"));
-      },400);
-      return next;
-    });
+  const setBridgesAndSave = (b)=>{
+    setBridges(b); saveBridges(b); bridgesRef.current=b;
+    setSaveStatus("saving");
+    saveToServer(layoutRef.current,b).then(ok=>setSaveStatus(ok?"saved":"error"));
   };
 
   const si=(k,v)=>setInfra(p=>({...p,[k]:v}));
@@ -511,46 +534,97 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   const results    = hops.map(h=>calcSegment(h.src,h.dst,infra,h.ifaceType,layout,bridges));
   const totalSlack = results.reduce((s,r)=>s+r.withSlack,0);
   const isHomeRun  = hops.length===1;
-  const unresolved = racks.filter(r=>!r.resolved);
-  const byRow = racks.reduce((acc,r)=>{const row=r.row??"?";(acc[row]=acc[row]??[]).push(r);return acc;},{});
+  const unresolved = filteredRacks.filter(r=>!r.resolved);
+  const byRow = filteredRacks.reduce((acc,r)=>{const row=r.row??"?";(acc[row]=acc[row]??[]).push(r);return acc;},{});
   const bomGroups = hops.reduce((acc,hop,i)=>{
     const res=results[i];const key=`${res.iface.media}|${res.iface.connector}`;
     if(!acc[key]) acc[key]={media:res.media,connector:res.iface.connector,cables:[]};
     acc[key].cables.push(res.rec+" "+res.unit);return acc;
   },{});
 
-  const currentSite=siteTree.find(s=>s.id===(selected.site_id??null));
-  const locations=currentSite?.locations??[];
-  function applyScope(){
-    const params=new URLSearchParams();
-    if (pendingSite)     params.set("site_id",pendingSite);
-    if (pendingLocation) params.set("location_id",pendingLocation);
-    window.location.search=params.toString();
+  const SelectedSiteId = pendingSite; //Set the active SiteId from the pending site selection
+  const SelectedLocationId = pendingLocation; //Set the activeLocationId from the Pending Location
+
+  const currentSite = useMemo(() => {
+    return siteTree.find(site => String(site.id) === String(SelectedSiteId));
+  }, [siteTree, SelectedSiteId]);
+
+  const locations = useMemo(() => {
+    return Array.isArray(currentSite?.locations) ? currentSite.locations : [];
+  }, [currentSite]);
+
+  const locationSelectRef = useRef(null); //Create a REF for the location select element
+
+  // Update the TomSelect instance when locations change
+  useEffect(() => {
+    const select = locationSelectRef.current;
+
+    if (!select?.tomselect) {
+      return;
+    }
+
+    const ts = select.tomselect;
+    
+    ts.clear(); // Clear current selection
+    ts.clearOptions(); // Clear current options
+    
+    // Add new options based on the updated locations
+    locations.forEach(location => {
+      ts.addOption({
+        value: String(location.id),
+        text: location.name
+      });
+    });
+
+    ts.refreshOptions(false);
+
+    if (locations.length > 0) {
+      ts.enable();
+    } else {
+      ts.disable();
+    }
+
+  }, [locations]);
+
+  //Handle site selection change
+  //when the site changes, we need to reset the location selection and update the location.
+  const handleSiteChange = (e) => {
+    const siteID = e.target.value;
+
+    setPendingSite(siteID);
+    setPendingLocation(""); // Reset location when site changes
+  }  
+
+  //Handle location selection change
+  const handleLocationChange = (e) => {
+    const selectedLocationId = e.target.value;
+    setPendingLocation(selectedLocationId);
   }
-  const scopeLabel=[currentSite?.name,locations.find(l=>l.id===selected.location_id)?.name].filter(Boolean).join(" > ");
+
+  const currentLocation = locations.find(location => String(location.id) === String(SelectedLocationId));
+
+  const scopeLabel = [currentSite?.name,currentLocation?.name].filter(Boolean).join(" > ");
+  //const scopeLabel=[currentSite?.name,locations.find(l=>l.id===selected.location_id)?.name].filter(Boolean).join(" > ");
 
   return (
     <div>
       <div className="d-flex align-items-end gap-2 mb-3 p-2 border rounded" style={{background:"#f8f9fa"}}>
         <div>
           <label className="form-label mb-1" style={{fontSize:11,fontWeight:500,textTransform:"uppercase",letterSpacing:"0.05em",color:"#6c757d"}}>Site</label>
-          <select className="form-select form-select-sm" style={{minWidth:180}} value={pendingSite}
-            onChange={e=>{setPendingSite(e.target.value);setPendingLocation("");}}>
-            <option value="">All sites</option>
-            {siteTree.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+          <select className="form-select form-select-sm" style={{minWidth:280}} value={pendingSite} onChange={handleSiteChange}>
+            <option value="">sites</option>
+            {siteTree.map(site=>(<option key={site.id} value={String(site.id)}>{site.name}</option>))}
           </select>
         </div>
         <div>
           <label className="form-label mb-1" style={{fontSize:11,fontWeight:500,textTransform:"uppercase",letterSpacing:"0.05em",color:"#6c757d"}}>Location</label>
-          <select className="form-select form-select-sm" style={{minWidth:180}} value={pendingLocation}
-            onChange={e=>setPendingLocation(e.target.value)} disabled={!pendingSite}>
-            <option value="">All locations</option>
-            {locations.map(l=><option key={l.id} value={l.id}>{l.label}</option>)}
+          <select ref={locationSelectRef} className="form-select form-select-sm" style={{minWidth:280}} value={pendingLocation} onChange={handleLocationChange} disabled={!pendingSite || locations.length === 0}>
+            <option value="">{pendingSite && locations.length === 0 ? "No locations found" : "All locations"}</option>
+            {locations.map(location=><option key={location.id} value={String(location.id)}>{location.name}</option>)}
           </select>
         </div>
-        <button className="btn btn-primary btn-sm" onClick={applyScope}>Apply</button>
-        {scopeLabel&&<span className="badge bg-primary ms-1" style={{fontSize:12,fontWeight:400}}>{scopeLabel}</span>}
-        {!selected.site_id&&<span className="ms-auto text-warning" style={{fontSize:12}}>No site selected</span>}
+        {scopeLabel&&<span className="badge bg-primary ms-1" style={{fontSize:12,fontWeight:400,color:"#FFFFFF"}}>{scopeLabel}</span>}
+        {!SelectedSiteId&&<span className="ms-auto text-warning" style={{fontSize:12}}>No site selected</span>}
       </div>
 
       <ul className="nav nav-tabs mb-3">
@@ -606,8 +680,8 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
                     <div className="text-muted mt-1" style={{fontSize:11}}>Stock lengths: {res.media.stdLengths.map(l=>`${l} ${res.unit}`).join(", ")}</div>
                   </div>
                   <div className="row g-2 mb-3">
-                    <div className="col-6"><DeviceSelector label="From" value={hop.src} onChange={v=>updEp(hop.id,"src",v)} devices={devices} rackMap={rackMap} accent="src"/></div>
-                    <div className="col-6"><DeviceSelector label="To"   value={hop.dst} onChange={v=>updEp(hop.id,"dst",v)} devices={devices} rackMap={rackMap} accent="dst"/></div>
+                    <div className="col-6"><DeviceSelector label="From" value={hop.src} onChange={v=>updEp(hop.id,"src",v)} devices={filteredDevices} rackMap={rackMap} accent="src"/></div>
+                    <div className="col-6"><DeviceSelector label="To"   value={hop.dst} onChange={v=>updEp(hop.id,"dst",v)} devices={filteredDevices} rackMap={rackMap} accent="dst"/></div>
                   </div>
                   {ready&&(
                     <div className="p-2 border rounded">
@@ -682,7 +756,7 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
         </div>
       </>)}
 
-      {tab==="bom"&&<BulkBomTab selected={selected} scopeLabel={scopeLabel} cfg={cfg}/>}
+      {tab==="bom"&&<BulkBomTab siteId={pendingSite} locationId={pendingLocation} scopeLabel={scopeLabel} cfg={cfg}/>}
 
       {tab==="floorplan"&&(
         <div>
@@ -691,7 +765,7 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
             {saveStatus==="saved" &&<span className="badge bg-success">Layout saved</span>}
             {saveStatus==="error" &&<span className="badge bg-danger">Save failed</span>}
           </div>
-          <FloorPlan racks={racks||[]} layout={layout||{rows:[],rackPositions:{}}}
+          <FloorPlan racks={filteredRacks||[]} layout={layout||{rows:[],rackPositions:{}}}
             setLayout={setLayoutAndSave} bridges={bridges||[]} setBridges={setBridgesAndSave}/>
         </div>
       )}
@@ -705,7 +779,7 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
             <table className="table table-sm table-bordered mb-0" style={{fontSize:12}}>
               <thead className="table-light"><tr><th/><th>Name</th><th>Site</th><th>Location</th><th>Row</th><th>Pos</th><th>Width</th><th>Height</th><th>Offset</th></tr></thead>
               <tbody>
-                {racks.map(r=>(
+                {filteredRacks.map(r=>(
                   <tr key={r.id}>
                     <td><span style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:r.resolved?"#198754":"#dc3545"}}/></td>
                     <td><code>{r.name}</code></td><td className="text-muted">{r.site_name}</td><td className="text-muted">{r.location_name||"-"}</td>
