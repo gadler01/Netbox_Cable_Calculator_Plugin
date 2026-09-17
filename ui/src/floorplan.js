@@ -15,23 +15,35 @@ function getCookie(name) {
   const v = document.cookie.match("(^|;)\\s*" + name + "\\s*=\\s*([^;]+)");
   return v ? v.pop() : "";
 }
-export async function loadFromServer() {
+
+export async function loadFromServer(siteId, locationId) {
   try {
-    const params = scopeParams();
-    if (!params) return null;
-    const res = await fetch("/plugins/cable-calc/layout/?" + params);
-    if (!res.ok) return null;
+    const params = new URLSearchParams();
+    if (siteId)     params.set("site_id", siteId);
+    if (locationId) params.set("location_id", locationId);
+    if (!params.toString()) return null;
+    const url = "/plugins/cable-calc/layout/?" + params;
+    //console.log("loadFromServer fetching:", url);
+    const res = await fetch(url);
+    //console.log("loadFromServer response status:", res.status);
     const data = await res.json();
+    //console.log("loadFromServer data:", JSON.stringify(data).substring(0, 200));
     if (data.layout && data.layout.rows && data.layout.rows.length > 0) {
       return { layout: data.layout, bridges: data.bridges || [] };
     }
     return null;
-  } catch(_) { return null; }
+  } catch(e) { 
+    console.log("loadFromServer error:", e);
+    return null; 
+  }
 }
-export async function saveToServer(layout, bridges) {
+export async function saveToServer(layout, bridges, siteId, locationId) {
   try {
-    const params = scopeParams();
-    if (!params) return false;
+    const params = new URLSearchParams();
+    if (siteId)     params.set("site_id", siteId);
+    if (locationId) params.set("location_id", locationId);
+    if (!params.toString()) return false;
+    //console.log("saveToServer called, layout rows:", layout?.rows?.length, "positions:", Object.keys(layout?.rackPositions||{}).length);
     const res = await fetch("/plugins/cable-calc/layout/?" + params, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },

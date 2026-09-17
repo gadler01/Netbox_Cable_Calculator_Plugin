@@ -498,18 +498,20 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
 
   //Load layout and bridges from the server when the pending site or location changes. If no layout is found, an automatic layout is generated based on the filtered racks.
   useEffect(()=>{
-    setLayout({rows:[],rackPositions:{}});
-    setBridges([]);
-    loadFromServer().then(data=>{
-      if (data&&data.layout&&data.layout.rows&&data.layout.rows.length>0) {
-        setLayout(data.layout); layoutRef.current=data.layout;
-        setBridges(data.bridges||[]); bridgesRef.current=data.bridges||[];
-      } else if (filteredRacks.length>0) {
-        const auto=autoLayout(filteredRacks); setLayout(auto); layoutRef.current=auto;
-      }
-      setLayoutReady(true);
-    });
-  },[filteredRacks]);
+  //console.log("Layout load effect fired, site:", pendingSite, "loc:", pendingLocation);
+  setLayout({rows:[],rackPositions:{}});
+  setBridges([]);
+  loadFromServer(pendingSite, pendingLocation).then(data=>{
+    //console.log("loadFromServer returned:", data);
+    if (data&&data.layout&&data.layout.rows&&data.layout.rows.length>0) {
+      setLayout(data.layout); layoutRef.current=data.layout;
+      setBridges(data.bridges||[]); bridgesRef.current=data.bridges||[];
+    } else if (filteredRacks.length>0) {
+      const auto=autoLayout(filteredRacks); setLayout(auto); layoutRef.current=auto;
+    }
+    setLayoutReady(true);
+  });
+},[pendingSite, pendingLocation]);
 
   useEffect(()=>{layoutRef.current=layout;},[layout]);
   useEffect(()=>{bridgesRef.current=bridges;},[bridges]);
@@ -517,12 +519,12 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   const setLayoutAndSave = (l)=>{
     setLayout(l); saveLayout(l); layoutRef.current=l;
     setSaveStatus("saving");
-    saveToServer(l,bridgesRef.current).then(ok=>setSaveStatus(ok?"saved":"error"));
+    saveToServer(l,bridgesRef.current, pendingSite, pendingLocation).then(ok=>setSaveStatus(ok?"saved":"error"));
   };
   const setBridgesAndSave = (b)=>{
     setBridges(b); saveBridges(b); bridgesRef.current=b;
     setSaveStatus("saving");
-    saveToServer(layoutRef.current,b).then(ok=>setSaveStatus(ok?"saved":"error"));
+    saveToServer(layoutRef.current,b, pendingSite, pendingLocation).then(ok=>setSaveStatus(ok?"saved":"error"));
   };
 
   const si=(k,v)=>setInfra(p=>({...p,[k]:v}));
@@ -766,7 +768,7 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
             {saveStatus==="error" &&<span className="badge bg-danger">Save failed</span>}
           </div>
           <FloorPlan racks={filteredRacks||[]} layout={layout||{rows:[],rackPositions:{}}}
-            setLayout={setLayoutAndSave} bridges={bridges||[]} setBridges={setBridgesAndSave}/>
+            setLayout={setLayout} onSave={setLayoutAndSave} bridges={bridges||[]} setBridges={setBridgesAndSave}/>
         </div>
       )}
 

@@ -47,7 +47,7 @@ function BridgeForm({rows, bridge, onSave, onCancel}) {
   );
 }
 
-export default function FloorPlan({racks,layout,setLayout,bridges,setBridges}) {
+export default function FloorPlan({racks,layout,setLayout,onSave,bridges,setBridges}) {
   const canvasRef = useRef(null);
   const dragging = useRef(null);
   const [addingBridge,setAddingBridge] = useState(false);
@@ -88,34 +88,47 @@ export default function FloorPlan({racks,layout,setLayout,bridges,setBridges}) {
   },[layout]);
 
   const onMouseMove = useCallback((e)=>{
-    if (!dragging.current) return;
-    const rect=canvasRef.current.getBoundingClientRect();
-    const xPx=e.clientX-rect.left; const yPx=e.clientY-rect.top;
-    const newX=snap(dragging.current.startX+pxToIn(xPx-dragging.current.startXPx),GRID);
-    let targetRowId=layout.rackPositions[dragging.current.rackId]&&layout.rackPositions[dragging.current.rackId].rowId;
-    for (let i=0;i<rowBands.length;i++){
-      if (yPx>=rowBands[i].bandY&&yPx<rowBands[i].bandY+ROW_H){targetRowId=rowBands[i].id;break;}
-    }
+  if (!dragging.current) return;
+  const rect=canvasRef.current.getBoundingClientRect();
+  const xPx=e.clientX-rect.left; const yPx=e.clientY-rect.top;
+  const newX=snap(dragging.current.startX+pxToIn(xPx-dragging.current.startXPx),GRID);
+  let targetRowId=layout.rackPositions[dragging.current.rackId]&&layout.rackPositions[dragging.current.rackId].rowId;
+  for (let i=0;i<rowBands.length;i++){
+    if (yPx>=rowBands[i].bandY&&yPx<rowBands[i].bandY+ROW_H){targetRowId=rowBands[i].id;break;}
+  }
+  if (targetRowId) {
     setLayout(prev=>{
       const rp=Object.assign({},prev.rackPositions);
       rp[dragging.current.rackId]={x:Math.max(0,newX),rowId:targetRowId};
-      return Object.assign({},prev,{rackPositions:rp});
+      const next=Object.assign({},prev,{rackPositions:rp});
+      dragging.current.pendingLayout = next;
+      return next;
     });
-  },[layout,rowBands,setLayout]);
+  }
+},[layout,rowBands,setLayout]);
 
   const onMouseUp = useCallback(()=>{
-    if (dragging.current){
-      dragging.current=null;
-      setLayout(current=>current);
+  if (dragging.current){
+    const savedLayout = dragging.current.pendingLayout;
+    dragging.current = null;
+    if (savedLayout) {
+      onSave(savedLayout);
     }
-  },[setLayout]);
+  }
+},[onSave]);
 
   const dropOnRow = useCallback((rackId,rowId)=>{
-    const rack=rackMap[rackId];
-    const others=Object.values(layout.rackPositions).filter(p=>p.rowId===rowId).map(p=>p.x);
-    const maxX=others.length>0?Math.max(...others)+(rack&&rack.width_in||24):(rack&&rack.width_in||24)/2;
-    setLayout(prev=>{const rp=Object.assign({},prev.rackPositions);rp[rackId]={x:maxX,rowId};return Object.assign({},prev,{rackPositions:rp});});
-  },[layout,rackMap,setLayout]);
+  const rack=rackMap[rackId];
+  const others=Object.values(layout.rackPositions).filter(p=>p.rowId===rowId).map(p=>p.x);
+  const maxX=others.length>0?Math.max(...others)+(rack&&rack.width_in||24):(rack&&rack.width_in||24)/2;
+  setLayout(prev=>{
+    const rp=Object.assign({},prev.rackPositions);
+    rp[rackId]={x:maxX,rowId};
+    const next=Object.assign({},prev,{rackPositions:rp});
+    onSave(next);
+    return next;
+  });
+},[layout,rackMap,setLayout,onSave]);
 
   const saveBridgeFn = useCallback((form)=>{
     const id=editBridge||("bridge-"+Date.now());
