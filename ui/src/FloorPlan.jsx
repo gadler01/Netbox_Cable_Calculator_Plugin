@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { autoLayout, saveLayout, saveBridges } from "./floorplan.js";
+import { autoLayout, saveBridges } from "./floorplan.js";
 
 const GRID = 12;
 const SCALE = 0.5;
@@ -141,7 +141,38 @@ export default function FloorPlan({racks,layout,setLayout,onSave,bridges,setBrid
     setBridges(bridges.filter(b=>b.id!==id));
   },[setBridges,bridges]);
 
-  const runAutoLayout = ()=>{const l=autoLayout(racks);setLayout(l);saveLayout(l);};
+  const renameRow = useCallback((rowId,label)=>{
+    setLayout(prev=>{
+      const next={...prev,rows:prev.rows.map(r=>r.id===rowId?{...r,label}:r)};
+      onSave(next);
+      return next;
+    });
+  },[setLayout,onSave]);
+
+  const deleteRow = useCallback((rowId)=>{
+    const row=layout.rows.find(r=>r.id===rowId);
+    const rackCount=Object.values(layout.rackPositions).filter(p=>p.rowId===rowId).length;
+    const bridgeCount=bridges.filter(b=>b.rowIdA===rowId||b.rowIdB===rowId).length;
+    const msg=`Delete "${row?row.label:rowId}"?`
+      +(rackCount?` ${rackCount} rack${rackCount>1?"s":""} will become unpositioned.`:"")
+      +(bridgeCount?` ${bridgeCount} bridge${bridgeCount>1?"s":""} to/from it will be removed.`:"");
+    if (!window.confirm(msg)) return;
+    const nextBridges=bridges.filter(b=>b.rowIdA!==rowId&&b.rowIdB!==rowId);
+    // onSave first: it synchronously updates App's layoutRef before firing its
+    // own network save, so the setBridges call right after (which saves using
+    // that same ref) persists both the row removal and the bridge cleanup
+    // together instead of two saves that only know about their own half.
+    setLayout(prev=>{
+      const rp={...prev.rackPositions};
+      Object.keys(rp).forEach(rackId=>{ if (rp[rackId].rowId===rowId) delete rp[rackId]; });
+      const next={...prev,rows:prev.rows.filter(r=>r.id!==rowId),rackPositions:rp};
+      onSave(next);
+      return next;
+    });
+    setBridges(nextBridges);
+  },[layout,bridges,setLayout,onSave,setBridges]);
+
+  const runAutoLayout = ()=>{onSave(autoLayout(racks));};
   const svgW=Math.max(canvasWidth,600);
   const svgH=Math.max(totalH+ROW_H,120);
 
@@ -194,16 +225,32 @@ export default function FloorPlan({racks,layout,setLayout,onSave,bridges,setBrid
         <div className="d-flex gap-3 flex-wrap align-items-center">
           {layout.rows.map((row,i)=>(
             <div key={row.id} className="d-flex align-items-center gap-1" style={{fontSize:12}}>
-              <span className="badge" style={{background:rowColor(i),color:"#333",border:"1px solid #ccc"}}>{row.label}</span>
+              <input className="form-control form-control-sm" style={{width:110,background:rowColor(i),border:"1px solid #ccc",fontWeight:500}}
+                defaultValue={row.label} key={row.id+":"+row.label}
+                onBlur={e=>{const v=e.target.value.trim();if(v&&v!==row.label) renameRow(row.id,v); else e.target.value=row.label;}}
+                onKeyDown={e=>{if(e.key==="Enter") e.target.blur();}}/>
               <span className="text-muted">aisle after:</span>
               <input type="number" className="form-control form-control-sm" style={{width:60}} value={row.aisleAfter||60}
-                onChange={e=>{const v=parseFloat(e.target.value)||60;setLayout(prev=>({...prev,rows:prev.rows.map(r=>r.id===row.id?{...r,aisleAfter:v}:r)}));}}/>
+                onChange={e=>{
+                  const v=parseFloat(e.target.value)||60;
+                  setLayout(prev=>{
+                    const next={...prev,rows:prev.rows.map(r=>r.id===row.id?{...r,aisleAfter:v}:r)};
+                    onSave(next);
+                    return next;
+                  });
+                }}/>
               <span className="text-muted">in</span>
+              <button type="button" className="btn btn-sm btn-outline-danger py-0 px-1" style={{fontSize:10}}
+                title="Delete row" onClick={()=>deleteRow(row.id)}>×</button>
             </div>
           ))}
           <button className="btn btn-outline-secondary btn-sm" onClick={()=>{
             const id="row-"+Date.now();
-            setLayout(prev=>({...prev,rows:[...prev.rows,{id,label:"Row "+(prev.rows.length+1),aisleAfter:60}]}));
+            setLayout(prev=>{
+              const next={...prev,rows:[...prev.rows,{id,label:"Row "+(prev.rows.length+1),aisleAfter:60}]};
+              onSave(next);
+              return next;
+            });
           }}>+ Add row</button>
         </div>
       </div></div>

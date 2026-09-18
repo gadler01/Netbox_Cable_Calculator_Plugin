@@ -138,6 +138,35 @@ def _load_layout_file(site_id, location_id=None):
         return None, []
 
 
+def _namespace_layout(scope, layout, bridges):
+    """
+    Row ids (e.g. "row-?", the default bucket for racks whose name didn't
+    parse into a row) are only unique within the one file they were saved
+    in - every location, and the site-level file itself, can independently
+    produce a row literally called "row-?". Merging those as-is collides:
+    two different rows share one id, which drops one of them from a
+    React list keyed by row id, and silently corrupts the row-index lookup
+    _build_rack_index uses for cross-aisle distance.
+
+    Prefixes every row id - and everything that references one
+    (rackPositions[*].rowId, bridge rowIdA/rowIdB) - with a scope tag so
+    ids from different files can never collide once merged.
+    """
+    def ns(row_id):
+        return row_id if row_id is None else f"{scope}:{row_id}"
+
+    rows = [{**row, 'id': ns(row.get('id'))} for row in (layout or {}).get('rows', [])]
+    rack_positions = {
+        rack_id: {**pos, 'rowId': ns(pos.get('rowId'))}
+        for rack_id, pos in (layout or {}).get('rackPositions', {}).items()
+    }
+    ns_bridges = [
+        {**b, 'rowIdA': ns(b.get('rowIdA')), 'rowIdB': ns(b.get('rowIdB'))}
+        for b in (bridges or [])
+    ]
+    return rows, rack_positions, ns_bridges
+
+
 def _load_scoped_layout(site_id, location_id):
     """
     Rows/rackPositions are saved per location, but a site-wide BOM (and the
@@ -149,7 +178,9 @@ def _load_scoped_layout(site_id, location_id):
     locationId/locationName it came from (None/None for rows that live in
     the site-level file itself) so a consumer can tell a same-location row
     apart from another location's, and by extension tell a same-location
-    bridge apart from a genuine cross-location one.
+    bridge apart from a genuine cross-location one. Row ids are namespaced
+    per source file (see _namespace_layout) so same-named rows from
+    different locations don't collide once merged.
 
     Returns (rows_list, rack_positions_dict, bridges_list).
     """
@@ -160,19 +191,20 @@ def _load_scoped_layout(site_id, location_id):
     rows, rack_positions, bridges_by_id = [], {}, {}
 
     site_layout, site_bridges = _load_layout_file(site_id, None)
-    for row in (site_layout or {}).get('rows', []):
+    ns_rows, ns_positions, ns_bridges = _namespace_layout("site", site_layout, site_bridges)
+    for row in ns_rows:
         rows.append({**row, 'locationId': None, 'locationName': None})
-    rack_positions.update((site_layout or {}).get('rackPositions', {}))
-    for b in site_bridges:
+    rack_positions.update(ns_positions)
+    for b in ns_bridges:
         bridges_by_id[b.get('id') or id(b)] = b
 
     for loc in Location.objects.filter(site_id=site_id).order_by('name'):
         loc_layout, loc_bridges = _load_layout_file(site_id, loc.id)
-        if loc_layout:
-            for row in loc_layout.get('rows', []):
-                rows.append({**row, 'locationId': loc.id, 'locationName': loc.name})
-            rack_positions.update(loc_layout.get('rackPositions', {}))
-        for b in loc_bridges:
+        ns_rows, ns_positions, ns_bridges = _namespace_layout(f"loc{loc.id}", loc_layout, loc_bridges)
+        for row in ns_rows:
+            rows.append({**row, 'locationId': loc.id, 'locationName': loc.name})
+        rack_positions.update(ns_positions)
+        for b in ns_bridges:
             bridges_by_id[b.get('id') or id(b)] = b
 
     return rows, rack_positions, list(bridges_by_id.values())
