@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import FloorPlan from "./FloorPlan.jsx";
-import { autoLayout, loadLayout, loadBridges, saveLayout, saveBridges, shortestPath, loadFromServer, saveToServer } from "./floorplan.js";
+import SiteLayout from "./SiteLayout.jsx";
+import { autoLayout, loadLayout, loadBridges, saveLayout, saveBridges, shortestPath, loadFromServer, saveToServer, isCrossLocationBridge } from "./floorplan.js";
 
 const U_HEIGHT = 1.75;
 const FT_TO_M  = 0.3048;
@@ -496,6 +497,20 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
     [devices, rackMap]
   );
 
+  const currentSite = useMemo(() => {
+    return siteTree.find(site => String(site.id) === String(pendingSite));
+  }, [siteTree, pendingSite]);
+
+  const locations = useMemo(() => {
+    return Array.isArray(currentSite?.locations) ? currentSite.locations : [];
+  }, [currentSite]);
+
+  // A site is only shown as its merged, cross-location view when no single
+  // location is picked AND the site actually has locations to merge -
+  // otherwise (a flat site with no Locations) the per-location FloorPlan
+  // editor already covers the whole site on its own.
+  const showSiteLayout = Boolean(pendingSite) && !pendingLocation && locations.length>0;
+
   //Load layout and bridges from the server when the pending site or location changes. If no layout is found, an automatic layout is generated based on the filtered racks.
   useEffect(()=>{
   //console.log("Layout load effect fired, site:", pendingSite, "loc:", pendingLocation);
@@ -506,7 +521,12 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
     if (data&&data.layout&&data.layout.rows&&data.layout.rows.length>0) {
       setLayout(data.layout); layoutRef.current=data.layout;
       setBridges(data.bridges||[]); bridgesRef.current=data.bridges||[];
-    } else if (filteredRacks.length>0) {
+    } else if (!showSiteLayout && filteredRacks.length>0) {
+      // Auto-generating from rack.row name-guessing only makes sense for a
+      // single location's own floor plan - across the whole site, two
+      // different locations can each have their own "Row A", and merging
+      // them by row-name would silently combine unrelated locations' racks
+      // into one row.
       const auto=autoLayout(filteredRacks); setLayout(auto); layoutRef.current=auto;
     }
     setLayoutReady(true);
@@ -524,7 +544,26 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   const setBridgesAndSave = (b)=>{
     setBridges(b); saveBridges(b); bridgesRef.current=b;
     setSaveStatus("saving");
-    saveToServer(layoutRef.current,b, pendingSite, pendingLocation).then(ok=>setSaveStatus(ok?"saved":"error"));
+    if (showSiteLayout) {
+      // The site-level layout file is the source of truth for cross-location
+      // bridges only - rows/rackPositions belong to each location's own
+      // file, and same-location bridges belong to that location's own file
+      // too. Saving the full merged bridges list here would duplicate
+      // location-owned bridges into the site file, where a later delete in
+      // the owning location would no longer clear that stale copy.
+      const currentRows = layoutRef.current.rows||[];
+      const siteRows = currentRows.filter(r=>r.locationId==null);
+      const siteRowIds = new Set(siteRows.map(r=>r.id));
+      const sitePositions = {};
+      Object.entries(layoutRef.current.rackPositions||{}).forEach(([rackId,pos])=>{
+        if (siteRowIds.has(pos.rowId)) sitePositions[rackId]=pos;
+      });
+      const crossLocationOnly = b.filter(br=>isCrossLocationBridge(currentRows,br));
+      saveToServer({rows:siteRows,rackPositions:sitePositions}, crossLocationOnly, pendingSite, pendingLocation)
+        .then(ok=>setSaveStatus(ok?"saved":"error"));
+    } else {
+      saveToServer(layoutRef.current,b, pendingSite, pendingLocation).then(ok=>setSaveStatus(ok?"saved":"error"));
+    }
   };
 
   const si=(k,v)=>setInfra(p=>({...p,[k]:v}));
@@ -546,14 +585,6 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
 
   const SelectedSiteId = pendingSite; //Set the active SiteId from the pending site selection
   const SelectedLocationId = pendingLocation; //Set the activeLocationId from the Pending Location
-
-  const currentSite = useMemo(() => {
-    return siteTree.find(site => String(site.id) === String(SelectedSiteId));
-  }, [siteTree, SelectedSiteId]);
-
-  const locations = useMemo(() => {
-    return Array.isArray(currentSite?.locations) ? currentSite.locations : [];
-  }, [currentSite]);
 
   const locationSelectRef = useRef(null); //Create a REF for the location select element
 
@@ -767,8 +798,11 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
             {saveStatus==="saved" &&<span className="badge bg-success">Layout saved</span>}
             {saveStatus==="error" &&<span className="badge bg-danger">Save failed</span>}
           </div>
-          <FloorPlan racks={filteredRacks||[]} layout={layout||{rows:[],rackPositions:{}}}
-            setLayout={setLayout} onSave={setLayoutAndSave} bridges={bridges||[]} setBridges={setBridgesAndSave}/>
+          {showSiteLayout
+            ? <SiteLayout racks={filteredRacks||[]} layout={layout||{rows:[],rackPositions:{}}}
+                bridges={bridges||[]} setBridges={setBridgesAndSave} locations={locations} siteName={currentSite?.name}/>
+            : <FloorPlan racks={filteredRacks||[]} layout={layout||{rows:[],rackPositions:{}}}
+                setLayout={setLayout} onSave={setLayoutAndSave} bridges={bridges||[]} setBridges={setBridgesAndSave}/>}
         </div>
       )}
 

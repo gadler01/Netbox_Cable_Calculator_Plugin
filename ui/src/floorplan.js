@@ -64,6 +64,31 @@ export function loadLayout() {
 export function loadBridges() {
   try { const s = sessionStorage.getItem(scopeKey("bridges")); return s ? JSON.parse(s) : null; } catch(_) { return null; }
 }
+// Rows returned by a site-wide (no location_id) layout fetch are tagged with
+// locationId/locationName server-side (see _load_scoped_layout in views.py)
+// so the site view can group them and tell a same-location bridge (owned by
+// one location's own floorplan) apart from a cross-location one (owned by
+// the site-level layout file).
+export function rowLocation(rows, rowId) {
+  const row = (rows || []).find(r => r.id === rowId);
+  return row ? (row.locationId ?? null) : null;
+}
+export function isCrossLocationBridge(rows, bridge) {
+  return rowLocation(rows, bridge.rowIdA) !== rowLocation(rows, bridge.rowIdB);
+}
+export function groupRowsByLocation(rows) {
+  const groups = [];
+  let current = null;
+  (rows || []).forEach(row => {
+    const key = row.locationId ?? null;
+    if (!current || current.key !== key) {
+      current = { key, locationId: row.locationId ?? null, locationName: row.locationName || "Site-level", rows: [] };
+      groups.push(current);
+    }
+    current.rows.push(row);
+  });
+  return groups;
+}
 export function autoLayout(racks, aisleWidth) {
   const aw = aisleWidth || 60;
   const rowMap = {};
