@@ -15,23 +15,35 @@ function getCookie(name) {
   const v = document.cookie.match("(^|;)\\s*" + name + "\\s*=\\s*([^;]+)");
   return v ? v.pop() : "";
 }
-export async function loadFromServer() {
+
+export async function loadFromServer(siteId, locationId) {
   try {
-    const params = scopeParams();
-    if (!params) return null;
-    const res = await fetch("/plugins/cable-calc/layout/?" + params);
-    if (!res.ok) return null;
+    const params = new URLSearchParams();
+    if (siteId)     params.set("site_id", siteId);
+    if (locationId) params.set("location_id", locationId);
+    if (!params.toString()) return null;
+    const url = "/plugins/cable-calc/layout/?" + params;
+    //console.log("loadFromServer fetching:", url);
+    const res = await fetch(url);
+    //console.log("loadFromServer response status:", res.status);
     const data = await res.json();
+    //console.log("loadFromServer data:", JSON.stringify(data).substring(0, 200));
     if (data.layout && data.layout.rows && data.layout.rows.length > 0) {
       return { layout: data.layout, bridges: data.bridges || [] };
     }
     return null;
-  } catch(_) { return null; }
+  } catch(e) { 
+    console.log("loadFromServer error:", e);
+    return null; 
+  }
 }
-export async function saveToServer(layout, bridges) {
+export async function saveToServer(layout, bridges, siteId, locationId) {
   try {
-    const params = scopeParams();
-    if (!params) return false;
+    const params = new URLSearchParams();
+    if (siteId)     params.set("site_id", siteId);
+    if (locationId) params.set("location_id", locationId);
+    if (!params.toString()) return false;
+    //console.log("saveToServer called, layout rows:", layout?.rows?.length, "positions:", Object.keys(layout?.rackPositions||{}).length);
     const res = await fetch("/plugins/cable-calc/layout/?" + params, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
@@ -51,6 +63,31 @@ export function loadLayout() {
 }
 export function loadBridges() {
   try { const s = sessionStorage.getItem(scopeKey("bridges")); return s ? JSON.parse(s) : null; } catch(_) { return null; }
+}
+// Rows returned by a site-wide (no location_id) layout fetch are tagged with
+// locationId/locationName server-side (see _load_scoped_layout in views.py)
+// so the site view can group them and tell a same-location bridge (owned by
+// one location's own floorplan) apart from a cross-location one (owned by
+// the site-level layout file).
+export function rowLocation(rows, rowId) {
+  const row = (rows || []).find(r => r.id === rowId);
+  return row ? (row.locationId ?? null) : null;
+}
+export function isCrossLocationBridge(rows, bridge) {
+  return rowLocation(rows, bridge.rowIdA) !== rowLocation(rows, bridge.rowIdB);
+}
+export function groupRowsByLocation(rows) {
+  const groups = [];
+  let current = null;
+  (rows || []).forEach(row => {
+    const key = row.locationId ?? null;
+    if (!current || current.key !== key) {
+      current = { key, locationId: row.locationId ?? null, locationName: row.locationName || "Site-level", rows: [] };
+      groups.push(current);
+    }
+    current.rows.push(row);
+  });
+  return groups;
 }
 export function autoLayout(racks, aisleWidth) {
   const aw = aisleWidth || 60;

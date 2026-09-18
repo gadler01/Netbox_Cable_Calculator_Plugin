@@ -140,9 +140,17 @@ def _load_layout_file(site_id, location_id=None):
 
 def _load_scoped_layout(site_id, location_id):
     """
-    Rows/rackPositions are saved per location, but a site-wide BOM needs all
-    of them merged (plus the site-level bridges that connect rows across
-    locations) so cross-location cables can be resolved.
+    Rows/rackPositions are saved per location, but a site-wide BOM (and the
+    site-wide floor plan view) needs all of them merged - plus the
+    site-level bridges that connect rows across locations - so
+    cross-location cables can be resolved.
+
+    When merging (location_id is None), each row is tagged with the
+    locationId/locationName it came from (None/None for rows that live in
+    the site-level file itself) so a consumer can tell a same-location row
+    apart from another location's, and by extension tell a same-location
+    bridge apart from a genuine cross-location one.
+
     Returns (rows_list, rack_positions_dict, bridges_list).
     """
     if location_id:
@@ -152,15 +160,17 @@ def _load_scoped_layout(site_id, location_id):
     rows, rack_positions, bridges_by_id = [], {}, {}
 
     site_layout, site_bridges = _load_layout_file(site_id, None)
-    rows += (site_layout or {}).get('rows', [])
+    for row in (site_layout or {}).get('rows', []):
+        rows.append({**row, 'locationId': None, 'locationName': None})
     rack_positions.update((site_layout or {}).get('rackPositions', {}))
     for b in site_bridges:
         bridges_by_id[b.get('id') or id(b)] = b
 
-    for loc_id in Location.objects.filter(site_id=site_id).values_list('id', flat=True):
-        loc_layout, loc_bridges = _load_layout_file(site_id, loc_id)
+    for loc in Location.objects.filter(site_id=site_id).order_by('name'):
+        loc_layout, loc_bridges = _load_layout_file(site_id, loc.id)
         if loc_layout:
-            rows += loc_layout.get('rows', [])
+            for row in loc_layout.get('rows', []):
+                rows.append({**row, 'locationId': loc.id, 'locationName': loc.name})
             rack_positions.update(loc_layout.get('rackPositions', {}))
         for b in loc_bridges:
             bridges_by_id[b.get('id') or id(b)] = b
@@ -663,14 +673,10 @@ class LayoutApiView(LoginRequiredMixin, View):
             location_id = int(location_id) if location_id else None
         except (ValueError, TypeError):
             return JsonResponse({"error": "Invalid site_id or location_id"}, status=400)
-        
-        path = _layout_path(site_id, location_id)
-        if not os.path.exists(path):
-            return JsonResponse({"layout": None, "bridges": []})
+
         try:
-            with open(path, "r") as f:
-                data = json.load(f)
-            return JsonResponse(data)
+            rows, rack_positions, bridges = _load_scoped_layout(site_id, location_id)
+            return JsonResponse({"layout": {"rows": rows, "rackPositions": rack_positions}, "bridges": bridges})
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
 
