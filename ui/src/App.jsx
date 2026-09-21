@@ -448,12 +448,18 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   const [expanded,setExpanded] = useState(null);
   const [pendingSite,setPendingSite]         = useState(String(selected.site_id??""));
   const [pendingLocation,setPendingLocation] = useState(String(selected.location_id??""));
+  const [dynamicRacks,setDynamicRacks]       = useState(null);
+  const [dynamicDevices,setDynamicDevices]   = useState(null);
   const [layout,setLayout]   = useState({rows:[],rackPositions:{}});
   const [bridges,setBridges] = useState([]);
   const layoutRef  = useRef({rows:[],rackPositions:{}});
   const bridgesRef = useRef([]);
   const [layoutReady,setLayoutReady]   = useState(false);
   const [saveStatus,setSaveStatus]     = useState(null);
+
+  const activeRacks = dynamicRacks ?? racks;
+  const activeDevices = dynamicDevices ?? devices;
+  const rackMap = useMemo(()=>Object.fromEntries(activeRacks.map(r=>[r.id,r])),[activeRacks]);
 
   //Update the URL parameters when pendingSite or pendingLocation changes. This allows the user to bookmark or share the current site/location selection.
   useEffect(() => {
@@ -475,7 +481,7 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
 
   //Filter Racks Based on the selected site and location. This ensures that only racks relevant to the current selection are displayed.
   const filteredRacks = useMemo(() => {
-    return racks.filter(r => {
+    return activeRacks.filter(r => {
       const siteMatch =
         !pendingSite ||
         String(r.site_id) === String(pendingSite);
@@ -486,15 +492,12 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
 
       return siteMatch && locationMatch;
     });
-  }, [racks, pendingSite, pendingLocation]);
-
-  //RackMap of filtered Racks.
-  const rackMap = useMemo(()=>Object.fromEntries(filteredRacks.map(r=>[r.id,r])),[filteredRacks]);
+  }, [activeRacks, pendingSite, pendingLocation]);
 
   //Filter Devices Based on the filtered racks. This ensures that only devices located in the relevant racks are considered for calculations.
   const filteredDevices = useMemo(
-    () => devices.filter(device => rackMap[device.rack_id]),
-    [devices, rackMap]
+    () => activeDevices.filter(device => rackMap[device.rack_id]),
+    [activeDevices, rackMap]
   );
 
   const currentSite = useMemo(() => {
@@ -511,27 +514,25 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   // editor already covers the whole site on its own.
   const showSiteLayout = Boolean(pendingSite) && !pendingLocation && locations.length>0;
 
-  //Load layout and bridges from the server when the pending site or location changes. If no layout is found, an automatic layout is generated based on the filtered racks.
+  //Dynamically fetch racks and devices when the scope changes, so switching between
+  // location and site-wide views doesn't require a page reload.
   useEffect(()=>{
-  //console.log("Layout load effect fired, site:", pendingSite, "loc:", pendingLocation);
-  setLayout({rows:[],rackPositions:{}});
-  setBridges([]);
-  loadFromServer(pendingSite, pendingLocation).then(data=>{
-    //console.log("loadFromServer returned:", data);
-    if (data&&data.layout&&data.layout.rows&&data.layout.rows.length>0) {
-      setLayout(data.layout); layoutRef.current=data.layout;
-      setBridges(data.bridges||[]); bridgesRef.current=data.bridges||[];
-    } else if (!showSiteLayout && filteredRacks.length>0) {
-      // Auto-generating from rack.row name-guessing only makes sense for a
-      // single location's own floor plan - across the whole site, two
-      // different locations can each have their own "Row A", and merging
-      // them by row-name would silently combine unrelated locations' racks
-      // into one row.
-      const auto=autoLayout(filteredRacks); setLayout(auto); layoutRef.current=auto;
+    if (!pendingSite) {
+      setDynamicRacks(null);
+      setDynamicDevices(null);
+      return;
     }
-    setLayoutReady(true);
-  });
-},[pendingSite, pendingLocation]);
+    const params=new URLSearchParams();
+    params.set("site_id",pendingSite);
+    if (pendingLocation) params.set("location_id",pendingLocation);
+    Promise.all([
+      fetch("/plugins/cable-calc/racks/?"+params).then(r=>r.ok?r.json():null),
+      fetch("/plugins/cable-calc/devices/?"+params).then(r=>r.ok?r.json():null)
+    ]).then(([racksData,devicesData])=>{
+      if (racksData&&racksData.racks) setDynamicRacks(racksData.racks);
+      if (devicesData&&devicesData.devices) setDynamicDevices(devicesData.devices);
+    }).catch(e=>console.error("Error fetching racks/devices:",e));
+  },[pendingSite,pendingLocation]);
 
   useEffect(()=>{layoutRef.current=layout;},[layout]);
   useEffect(()=>{bridgesRef.current=bridges;},[bridges]);

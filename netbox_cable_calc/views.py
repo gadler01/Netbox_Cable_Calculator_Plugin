@@ -809,3 +809,57 @@ class BomApiView(LoginRequiredMixin, View):
             return JsonResponse({"updated": updated, "errors": errors})
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=400)
+
+
+class RacksApiView(LoginRequiredMixin, View):
+    @method_decorator(csrf_exempt)
+    def dispatch(self, *args, **kwargs):
+        return super().dispatch(*args, **kwargs)
+
+    def get(self, request):
+        from django.conf import settings
+        plugin_cfg = settings.PLUGINS_CONFIG.get("netbox_cable_calc", {})
+        cfg = {k: plugin_cfg.get(k) for k in [
+            "outer_width_field", "outer_width_unit", "rack_spacing_default",
+        ]}
+
+        site_id = request.GET.get("site_id") or None
+        location_id = request.GET.get("location_id") or None
+
+        if site_id:
+            site_id = int(site_id)
+        if location_id:
+            location_id = int(location_id)
+
+        try:
+            racks = _build_rack_data(cfg, site_id, location_id)
+            return JsonResponse({"racks": racks})
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+
+class DevicesApiView(LoginRequiredMixin, View):
+    @method_decorator(csrf_exempt)
+    def dispatch(self, *args, **kwargs):
+        return super().dispatch(*args, **kwargs)
+
+    def get(self, request):
+        from django.conf import settings
+        plugin_cfg = settings.PLUGINS_CONFIG.get("netbox_cable_calc", {})
+        cfg = {k: plugin_cfg.get(k) for k in [
+            "front_exit_roles", "rear_exit_roles", "default_exit_face",
+        ]}
+
+        site_id = request.GET.get("site_id") or None
+        location_id = request.GET.get("location_id") or None
+
+        if site_id:
+            site_id = int(site_id)
+        if location_id:
+            location_id = int(location_id)
+
+        try:
+            devices = _build_device_data(cfg, site_id, location_id)
+            return JsonResponse({"devices": devices})
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)

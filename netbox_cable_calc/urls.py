@@ -9,4 +9,6 @@ urlpatterns = [
     path("", lambda req, **kw: _get_views().CalculatorView.as_view()(req, **kw), name="calculator"),
     path("bom/", csrf_exempt(lambda req, **kw: _get_views().BomApiView.as_view()(req, **kw)), name="bom-api"),
     path("layout/", csrf_exempt(lambda req, **kw: _get_views().LayoutApiView.as_view()(req, **kw)), name="layout-api"),
+    path("racks/", csrf_exempt(lambda req, **kw: _get_views().RacksApiView.as_view()(req, **kw)), name="racks-api"),
+    path("devices/", csrf_exempt(lambda req, **kw: _get_views().DevicesApiView.as_view()(req, **kw)), name="devices-api"),
 ]
