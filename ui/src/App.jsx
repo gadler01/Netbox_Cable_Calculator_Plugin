@@ -534,6 +534,30 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
     }).catch(e=>console.error("Error fetching racks/devices:",e));
   },[pendingSite,pendingLocation]);
 
+  useEffect(()=>{
+    if (!pendingSite) {
+      setLayout({rows:[],rackPositions:{}});
+      setBridges([]);
+      setLayoutReady(false);
+      return;
+    }
+    loadFromServer(pendingSite, pendingLocation).then(data=>{
+      if (data) {
+        setLayout(data.layout||{rows:[],rackPositions:{}});
+        setBridges(data.bridges||[]);
+      } else {
+        setLayout({rows:[],rackPositions:{}});
+        setBridges([]);
+      }
+      setLayoutReady(true);
+    }).catch(e=>{
+      console.error("Error loading layout:",e);
+      setLayout({rows:[],rackPositions:{}});
+      setBridges([]);
+      setLayoutReady(true);
+    });
+  },[pendingSite,pendingLocation]);
+
   useEffect(()=>{layoutRef.current=layout;},[layout]);
   useEffect(()=>{bridgesRef.current=bridges;},[bridges]);
 
