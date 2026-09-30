@@ -150,10 +150,16 @@ def _namespace_layout(scope, layout, bridges):
 
     Prefixes every row id - and everything that references one
     (rackPositions[*].rowId, bridge rowIdA/rowIdB) - with a scope tag so
-    ids from different files can never collide once merged.
+    ids from different files can never collide once merged. Idempotent:
+    if a row id already has the scope prefix, don't add it again.
     """
     def ns(row_id):
-        return row_id if row_id is None else f"{scope}:{row_id}"
+        if row_id is None:
+            return None
+        # Don't double-namespace: if it already starts with "scope:", skip
+        if row_id.startswith(f"{scope}:"):
+            return row_id
+        return f"{scope}:{row_id}"
 
     rows = [{**row, 'id': ns(row.get('id'))} for row in (layout or {}).get('rows', [])]
     rack_positions = {
