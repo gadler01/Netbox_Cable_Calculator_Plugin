@@ -23,18 +23,20 @@ export async function loadFromServer(siteId, locationId) {
     if (locationId) params.set("location_id", locationId);
     if (!params.toString()) return null;
     const url = "/plugins/cable-calc/layout/?" + params;
-    //console.log("loadFromServer fetching:", url);
+    console.log("loadFromServer fetching:", url);
     const res = await fetch(url);
-    //console.log("loadFromServer response status:", res.status);
+    console.log("loadFromServer response status:", res.status);
     const data = await res.json();
-    //console.log("loadFromServer data:", JSON.stringify(data).substring(0, 200));
+    console.log("loadFromServer data:", JSON.stringify(data).substring(0, 200));
     if (data.layout && data.layout.rows && data.layout.rows.length > 0) {
+      console.log("loadFromServer returning layout with", data.layout.rows.length, "rows");
       return { layout: data.layout, bridges: data.bridges || [] };
     }
+    console.log("loadFromServer: no rows found, returning null");
     return null;
-  } catch(e) { 
+  } catch(e) {
     console.log("loadFromServer error:", e);
-    return null; 
+    return null;
   }
 }
 export async function saveToServer(layout, bridges, siteId, locationId) {
