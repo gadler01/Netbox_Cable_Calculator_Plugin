@@ -442,6 +442,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
 }
 
 export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}) {
+  console.error("DEBUG: App component rendering. selected=", selected);
   const [infra,setInfra]     = useState(()=>infraFromCfg(cfg));
   const [tab,setTab]         = useState("calc");
   const [hops,setHops]       = useState([mkHop("Device to patch panel"),mkHop("Panel to panel cross-connect","10gbase-sr"),mkHop("Patch panel to device")]);
@@ -534,29 +535,52 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
     }).catch(e=>console.error("Error fetching racks/devices:",e));
   },[pendingSite,pendingLocation]);
 
+  // Reload the layout whenever the selected scope changes. The dropdowns
+  // update the URL with replaceState (no popstate), so this has to key off
+  // React state, not window.location.
   useEffect(()=>{
+    console.error("DEBUG: scope changed: site=" + pendingSite + " location=" + pendingLocation);
     if (!pendingSite) {
       setLayout({rows:[],rackPositions:{}});
       setBridges([]);
       setLayoutReady(false);
       return;
     }
+    // Ignore a response that arrives after the scope has changed again,
+    // so a slow fetch can't overwrite the newer scope's layout.
+    let stale = false;
+    // Clear the old scope's layout right away so a drag/save during the
+    // fetch can't write it into the new scope's file.
+    setLayout({rows:[],rackPositions:{}});
+    setBridges([]);
+    setLayoutReady(false);
     loadFromServer(pendingSite, pendingLocation).then(data=>{
-      if (data) {
-        setLayout(data.layout||{rows:[],rackPositions:{}});
-        setBridges(data.bridges||[]);
-      } else {
-        setLayout({rows:[],rackPositions:{}});
-        setBridges([]);
-      }
+      if (stale) { console.error("DEBUG: dropped stale layout for site=" + pendingSite + " location=" + pendingLocation); return; }
+      console.error("DEBUG: loadFromServer returned:", data ? "DATA with " + data.layout.rows.length + " rows" : "null");
+      setLayout(data?.layout||{rows:[],rackPositions:{}});
+      setBridges(data?.bridges||[]);
       setLayoutReady(true);
     }).catch(e=>{
+      if (stale) return;
       console.error("Error loading layout:",e);
       setLayout({rows:[],rackPositions:{}});
       setBridges([]);
       setLayoutReady(true);
     });
+    return ()=>{ stale = true; };
   },[pendingSite,pendingLocation]);
+
+  // Back/forward: sync scope state from the URL; the effect above reloads.
+  useEffect(()=>{
+    const handlePopState = () => {
+      const params = new URLSearchParams(window.location.search);
+      console.error("DEBUG: popstate: site_id=" + params.get("site_id") + " location_id=" + params.get("location_id"));
+      setPendingSite(params.get("site_id") || "");
+      setPendingLocation(params.get("location_id") || "");
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   useEffect(()=>{layoutRef.current=layout;},[layout]);
   useEffect(()=>{bridgesRef.current=bridges;},[bridges]);
@@ -570,21 +594,15 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
     setBridges(b); saveBridges(b); bridgesRef.current=b;
     setSaveStatus("saving");
     if (showSiteLayout) {
-      // The site-level layout file is the source of truth for cross-location
-      // bridges only - rows/rackPositions belong to each location's own
-      // file, and same-location bridges belong to that location's own file
-      // too. Saving the full merged bridges list here would duplicate
+      // The site-level layout file holds cross-location bridges only.
+      // Rows/rackPositions belong to each location's own file, and so do
+      // same-location bridges: saving the merged list here would duplicate
       // location-owned bridges into the site file, where a later delete in
-      // the owning location would no longer clear that stale copy.
-      const currentRows = layoutRef.current.rows||[];
-      const siteRows = currentRows.filter(r=>r.locationId==null);
-      const siteRowIds = new Set(siteRows.map(r=>r.id));
-      const sitePositions = {};
-      Object.entries(layoutRef.current.rackPositions||{}).forEach(([rackId,pos])=>{
-        if (siteRowIds.has(pos.rowId)) sitePositions[rackId]=pos;
-      });
-      const crossLocationOnly = b.filter(br=>isCrossLocationBridge(currentRows,br));
-      saveToServer({rows:siteRows,rackPositions:sitePositions}, crossLocationOnly, pendingSite, pendingLocation)
+      // the owning location would no longer clear that stale copy. Rows are
+      // written empty so leftover site-level rows from older versions get
+      // cleared instead of re-saved forever.
+      const crossLocationOnly = b.filter(br=>isCrossLocationBridge(layoutRef.current.rows||[],br));
+      saveToServer({rows:[],rackPositions:{}}, crossLocationOnly, pendingSite, pendingLocation)
         .then(ok=>setSaveStatus(ok?"saved":"error"));
     } else {
       saveToServer(layoutRef.current,b, pendingSite, pendingLocation).then(ok=>setSaveStatus(ok?"saved":"error"));
@@ -622,10 +640,10 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
     }
 
     const ts = select.tomselect;
-    
+
     ts.clear(); // Clear current selection
     ts.clearOptions(); // Clear current options
-    
+
     // Add new options based on the updated locations
     locations.forEach(location => {
       ts.addOption({
@@ -642,6 +660,19 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
       ts.disable();
     }
 
+    // Hook TomSelect change event to update pendingLocation
+    const handleTomSelectChange = () => {
+      const selectedValue = ts.getValue();
+      console.error("TomSelect changed to:", selectedValue);
+      setPendingLocation(String(selectedValue || ""));
+    };
+
+    ts.on('change', handleTomSelectChange);
+
+    return () => {
+      ts.off('change', handleTomSelectChange);
+    };
+
   }, [locations]);
 
   //Handle site selection change
@@ -656,6 +687,7 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   //Handle location selection change
   const handleLocationChange = (e) => {
     const selectedLocationId = e.target.value;
+    console.error("Location changed to:", selectedLocationId);
     setPendingLocation(selectedLocationId);
   }
 

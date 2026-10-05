@@ -151,13 +151,14 @@ def _namespace_layout(scope, layout, bridges):
     Prefixes every row id - and everything that references one
     (rackPositions[*].rowId, bridge rowIdA/rowIdB) - with a scope tag so
     ids from different files can never collide once merged. Idempotent:
-    if a row id already has the scope prefix, don't add it again.
+    an id that already carries any scope prefix ("site:..." or
+    "loc126:...") is left alone. Raw row ids ("row-?", "row-<ts>") never
+    contain ":", and site-level bridges are saved with the namespaced id of
+    the location row they point at, so re-prefixing those with "site:"
+    would make them point at a row that doesn't exist.
     """
     def ns(row_id):
-        if row_id is None:
-            return None
-        # Don't double-namespace: if it already starts with "scope:", skip
-        if row_id.startswith(f"{scope}:"):
+        if row_id is None or ":" in str(row_id):
             return row_id
         return f"{scope}:{row_id}"
 

@@ -80,7 +80,13 @@ export default function SiteLayout({racks, layout, bridges, setBridges, location
     return ()=>obs.disconnect();
   },[]);
 
-  const rows = layout.rows || [];
+  // Site-level rows (locationId null) are leftovers from before this view
+  // existed - nothing here can place racks in them - so hide them unless a
+  // rack is actually positioned in one.
+  const rows = useMemo(()=>{
+    const usedRowIds = new Set(Object.values(layout.rackPositions||{}).map(p=>p.rowId));
+    return (layout.rows||[]).filter(r=>r.locationId!=null || usedRowIds.has(r.id));
+  },[layout.rows, layout.rackPositions]);
   const rackMap = useMemo(()=>Object.fromEntries((racks||[]).map(r=>[r.id,r])),[racks]);
   const groups = useMemo(()=>groupRowsByLocation(rows),[rows]);
 
