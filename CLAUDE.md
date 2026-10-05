@@ -29,20 +29,19 @@ A NetBox 4.x plugin (`netbox_cable_calc`) that calculates cable lengths for data
 
 ### Dev NetBox on this host (`nbupg`)
 
-NetBox does **not** run from `~/nbcc`. It runs an editable install of `/opt/netbox/netbox_cable_calc_repo`, a separate git checkout. It serves the bundle from `STATIC_ROOT` (`/opt/netbox/netbox/static/`), not from the plugin folder. To deploy:
+NetBox does **not** run from `~/nbcc`. It runs an editable install of `/opt/netbox/netbox_cable_calc_repo`, a separate git checkout that tracks `origin/development`. It serves the bundle from `STATIC_ROOT` (`/opt/netbox/netbox/static/`), not from the plugin folder.
+
+To deploy, commit and push from `~/nbcc`, then:
 
 ```bash
-D=/opt/netbox/netbox_cable_calc_repo/netbox_cable_calc
-cp netbox_cable_calc/views.py $D/views.py
-cp netbox_cable_calc/templates/netbox_cable_calc/calculator.html $D/templates/netbox_cable_calc/
-cp netbox_cable_calc/static/netbox_cable_calc/calculator.bundle.js $D/static/netbox_cable_calc/
+cd /opt/netbox/netbox_cable_calc_repo && git pull
 cd /opt/netbox/netbox && sudo -u netbox /opt/netbox/venv/bin/python manage.py collectstatic --no-input
 sudo systemctl restart netbox netbox-rq
 ```
 
-Check: the browser console should show `calculator.bundle.js?v=<current number>`. If it shows an older number, the deploy didn't land.
-
-The live layout files are in `/opt/netbox/netbox_cable_calc_repo/netbox_cable_calc/layouts/`. The copies in `~/nbcc` are stale.
+- Don't copy files into the deploy checkout by hand. Local changes there make the next `git pull` fail.
+- Check: the browser console should show `calculator.bundle.js?v=<current number>`. If it shows an older number, the deploy didn't land.
+- The live layout files are in `/opt/netbox/netbox_cable_calc_repo/netbox_cable_calc/layouts/`. They're gitignored, so pulls don't touch them. The copies in `~/nbcc` are stale.
 
 There are no automated tests. To check a change, load the page in NetBox and watch the browser console.
 
@@ -60,27 +59,23 @@ Recent work, in order:
 2. Reload the layout when the scope changes (`4c14b0a`).
 3. Make `_namespace_layout` idempotent (`40dd360`).
 4. Add debug logging to `loadFromServer` and fix the Suite 14 layout file, which was missing `y` on its rows (`b0aa6c0`).
+5. `ad59be4` (bundle `v=20`, pushed and deployed):
+   - Layout reload fixed: the layout-load `useEffect` runs on `[pendingSite, pendingLocation]`. It clears the old layout at the start, and it ignores a response that arrives after the scope has changed again.
+   - `popstate` (back/forward) copies the URL into `pendingSite`/`pendingLocation`, and the effect above does the reload.
+   - `_namespace_layout` leaves any id that already has a `:` alone. Before this, site-level bridges loaded as `site:loc126:row-?`.
+   - The site file stores bridges only, and empty site-level rows are hidden in the site view.
+   - Temporary `console.error("DEBUG: ...")` logging in App.jsx.
 
-**Uncommitted work in progress** (App.jsx, SiteLayout.jsx, views.py, bundle, template now at `?v=20`):
-- Temporary `console.error("DEBUG: ...")` logging in App.jsx (render, scope change, layout load, popstate, TomSelect, location change).
-- Layout reload fixed: the layout-load `useEffect` runs on `[pendingSite, pendingLocation]` again. It clears the old layout at the start, and it ignores a response that arrives after the scope has changed again.
-- The `popstate` listener (back/forward) now just copies the URL into `pendingSite`/`pendingLocation`, and the effect above does the reload.
-- A TomSelect `change` handler that updates `pendingLocation`.
-- Fixed double-prefixed bridge ids in `_namespace_layout`. Any id that already has a `:` is left alone. Site-level bridges store location row ids like `loc126:row-?`, and before this fix they loaded as `site:loc126:row-?`.
-- The site file now stores bridges only, and empty site-level rows are hidden in the site view.
-- Cleaned the live `site_105.json`: removed 4 empty leftover rows and 2 broken bridges (backup in the session scratchpad).
-- Deployed to the dev NetBox on 2026-10-04 (bundle `v=20`).
+Data change made outside git: the live `site_105.json` was cleaned (4 empty leftover rows and 2 broken bridges removed).
 
 ## Known issues / next steps
 
-- **Debug logging is always on.** It should go behind a flag or be removed before merging to `main`. Debug messages use `console.error`, which makes them look like real errors.
+- **Debug logging is always on.** Remove it or put it behind a flag before merging to `main`. Debug messages use `console.error`, which makes them look like real errors.
+- **Site 105 has no cross-location bridges now.** Re-create the S14 to S15 bridges in the site view.
 - **Save errors are hidden.** `saveToServer` drops the error in `catch(_)`, and `LayoutApiView` has no server-side logging.
 - **The TomSelect handler may be redundant.** It sets `pendingLocation` alongside `handleLocationChange` (`onChange`). React skips the second update when the value is the same, so it's harmless but probably not needed.
 - **`layoutReady` is set but never read.** Either wire it up (for example, to disable saving while a layout loads) or remove it.
-
-- **Site 105 has no cross-location bridges now.** Re-create the S14 to S15 bridges in the site view.
 - **No floor plan for racks that are in a site but not in any location.** The site view is read-only for rows. If those racks need laying out, the site view needs its own row editor.
-- **The dev NetBox deploy copy is out of sync with git.** `/opt/netbox/netbox_cable_calc_repo` is at `aab0379` with files copied over it by hand.
 
 ## Conventions
 
