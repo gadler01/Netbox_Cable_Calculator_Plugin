@@ -8,8 +8,6 @@ from django.shortcuts import render
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views import View
 from django.http import JsonResponse
-from django.utils.decorators import method_decorator
-from django.views.decorators.csrf import csrf_exempt
 from dcim.models import Rack, Device, Interface, Site, Location
 
 MM_TO_IN = 1 / 25.4
@@ -762,11 +760,20 @@ class CalculatorView(LoginRequiredMixin, View):
         })
 
 
-class LayoutApiView(LoginRequiredMixin, View):
-    @method_decorator(csrf_exempt)
-    def dispatch(self, *args, **kwargs):
-        return super().dispatch(*args, **kwargs)
+def _can_edit_layout(user, site_id, location_id=None):
+    """
+    A floorplan positions racks, so saving one needs NetBox's own "change
+    rack" permission on at least one rack in that site (and location, if
+    given). Uses the user's object permissions, so constrained permissions
+    (e.g. only some sites) are honored.
+    """
+    qs = Rack.objects.restrict(user, "change").filter(site_id=site_id)
+    if location_id:
+        qs = qs.filter(location_id=location_id)
+    return qs.exists()
 
+
+class LayoutApiView(LoginRequiredMixin, View):
     def get(self, request):
         site_id     = request.GET.get("site_id")
         location_id = request.GET.get("location_id")
@@ -796,6 +803,13 @@ class LayoutApiView(LoginRequiredMixin, View):
         try:
             site_id = int(site_id)
             location_id = int(location_id) if location_id else None
+        except (ValueError, TypeError):
+            return JsonResponse({"error": "Invalid site_id or location_id"}, status=400)
+
+        if not _can_edit_layout(request.user, site_id, location_id):
+            return JsonResponse({"error": "You need permission to change racks in this site/location to save its floor plan."}, status=403)
+
+        try:
             body = json.loads(request.body)
             path = _layout_path(site_id, location_id)
             with open(path, "w") as f:
@@ -807,10 +821,6 @@ class LayoutApiView(LoginRequiredMixin, View):
 
 
 class BomApiView(LoginRequiredMixin, View):
-    @method_decorator(csrf_exempt)
-    def dispatch(self, *args, **kwargs):
-        return super().dispatch(*args, **kwargs)
-
     def get(self, request):
         from django.conf import settings
         plugin_cfg = settings.PLUGINS_CONFIG.get("netbox_cable_calc", {})
@@ -866,19 +876,24 @@ class BomApiView(LoginRequiredMixin, View):
         return JsonResponse({"cables": rows, "count": len(rows), "cached": False})
     def post(self, request):
         from dcim.models import Cable
+        # Only cables the user may change in NetBox (object permissions,
+        # including any constraints) can have their length saved.
+        if not request.user.has_perm("dcim.change_cable"):
+            return JsonResponse({"error": "You need permission to change cables to save lengths to NetBox."}, status=403)
+        allowed = Cable.objects.restrict(request.user, "change")
         try:
             body    = json.loads(request.body)
             updates = body.get("lengths", {})
             updated = 0; errors = []
             for cable_id_str, length_ft in updates.items():
                 try:
-                    cable = Cable.objects.get(pk=int(cable_id_str))
+                    cable = allowed.get(pk=int(cable_id_str))
                     cable.length = float(length_ft)
                     cable.length_unit = "ft"
                     cable.save()
                     updated += 1
                 except Cable.DoesNotExist:
-                    errors.append(f"Cable {cable_id_str} not found")
+                    errors.append(f"Cable {cable_id_str} not found or not permitted")
                 except Exception as e:
                     errors.append(f"Cable {cable_id_str}: {e}")
             return JsonResponse({"updated": updated, "errors": errors})
@@ -887,10 +902,6 @@ class BomApiView(LoginRequiredMixin, View):
 
 
 class RacksApiView(LoginRequiredMixin, View):
-    @method_decorator(csrf_exempt)
-    def dispatch(self, *args, **kwargs):
-        return super().dispatch(*args, **kwargs)
-
     def get(self, request):
         from django.conf import settings
         plugin_cfg = settings.PLUGINS_CONFIG.get("netbox_cable_calc", {})
@@ -914,10 +925,6 @@ class RacksApiView(LoginRequiredMixin, View):
 
 
 class DevicesApiView(LoginRequiredMixin, View):
-    @method_decorator(csrf_exempt)
-    def dispatch(self, *args, **kwargs):
-        return super().dispatch(*args, **kwargs)
-
     def get(self, request):
         from django.conf import settings
         plugin_cfg = settings.PLUGINS_CONFIG.get("netbox_cable_calc", {})

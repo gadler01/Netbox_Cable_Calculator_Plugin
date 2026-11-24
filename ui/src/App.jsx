@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import FloorPlan from "./FloorPlan.jsx";
 import SiteLayout from "./SiteLayout.jsx";
-import { autoLayout, loadLayout, loadBridges, saveLayout, saveBridges, shortestPath, loadFromServer, saveToServer, isCrossLocationBridge } from "./floorplan.js";
+import { autoLayout, loadLayout, loadBridges, saveLayout, saveBridges, shortestPath, loadFromServer, saveToServer, isCrossLocationBridge, csrfToken } from "./floorplan.js";
 
 const U_HEIGHT = 1.75;
 const FT_TO_M  = 0.3048;
@@ -141,11 +141,6 @@ function infraFromCfg(cfg={}) {
   };
 }
 
-function getCookie(name) {
-  const v=document.cookie.match("(^|;)\\s*"+name+"\\s*=\\s*([^;]+)");
-  return v?v.pop():"";
-}
-
 function exportManualCSV(hops,results) {
   const hdr=["Segment","From device","From rack","From RU","From face","To device","To rack","To RU","To face","Interface","Media","Connector","Calc","Stock","Unit","Qty"];
   const rows=hops.map((h,i)=>{const r=results[i];return[h.label,h.src.deviceName,h.src.rackName,h.src.ru,h.src.face,h.dst.deviceName,h.dst.rackName,h.dst.ru,h.dst.face,r.iface.label,r.media.label,r.iface.connector,r.calcDisplay,r.rec,r.unit,1];});
@@ -277,12 +272,13 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
       cables.forEach(c=>{lengths[c.cable_id]=c.stock_ft;});
       const res=await fetch("/plugins/cable-calc/bom/",{
         method:"POST",
-        headers:{"Content-Type":"application/json","X-CSRFToken":getCookie("csrftoken")},
+        headers:{"Content-Type":"application/json","X-CSRFToken":csrfToken()},
         body:JSON.stringify({lengths}),
       });
       const text=await res.text();
       let data;
-      try{data=JSON.parse(text);}catch(e){throw new Error("Non-JSON response: "+text.slice(0,100));}
+      try{data=JSON.parse(text);}catch(e){throw new Error(res.status===403?"Permission denied (403)":"Non-JSON response: "+text.slice(0,100));}
+      if (!res.ok) throw new Error(data.error||("HTTP "+res.status));
       setSaveMsg(`Saved ${data.updated} cables.${data.errors?.length?" Errors: "+data.errors.join(", "):""}`)
     } catch(e){setSaveMsg("Error: "+e.message);}
     finally{setSaving(false);}
@@ -336,11 +332,11 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
       {error&&<div className="alert alert-danger py-2">{error}</div>}
       {saveMsg&&<div className={`alert py-2 ${saveMsg.startsWith("Error")?"alert-danger":"alert-success"}`}>{saveMsg}</div>}
 
-      {missingBridgeCount>0&&<div className="alert alert-warning py-2" style={{fontSize:13}}>
+      {missingBridgeCount>0&&<div className="alert alert-warning py-2" style={{fontSize:13}}><div>
         <strong>{missingBridgeCount} cable{missingBridgeCount===1?"":"s"} cross rows with no bridge route</strong> (flagged "no bridge" below).
         Their lengths are rough estimates that leave out any bridge run, so they are likely too short.
         Add a matching fiber/copper bridge in the floor plan, then recalculate, before ordering or saving lengths to NetBox.
-      </div>}
+      </div></div>}
 
       {cables.length>0&&(<>
         <div className="card mb-3">
@@ -428,7 +424,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
                     <td><Pill>{c.connector}</Pill></td>
                     <td>{c.with_slack} ft</td>
                     <td><strong>{c.stock_ft} {c.unit??"ft"}</strong></td>
-                    <td>{c.cross_aisle&&<Badge color="warning">X-aisle</Badge>}{c.missing_bridge&&<span title="No floor plan bridge route between these rows; length is a rough estimate"><Badge color="danger">no bridge</Badge></span>}{c.same_rack&&<Badge color="secondary">same rack</Badge>}{c.error&&<Badge color="danger">err</Badge>}</td>
+                    <td>{c.cross_aisle&&<Badge color="warning">X-aisle</Badge>}{c.missing_bridge&&<span className="badge cc-flag-danger" title="No floor plan bridge route between these rows; length is a rough estimate">⚠ no bridge</span>}{c.same_rack&&<Badge color="secondary">same rack</Badge>}{c.error&&<Badge color="danger">err</Badge>}</td>
                   </tr>
                 ))}
               </tbody>

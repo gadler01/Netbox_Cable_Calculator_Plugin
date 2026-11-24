@@ -43,7 +43,21 @@ sudo systemctl restart netbox netbox-rq
 - Check: the browser console should show `calculator.bundle.js?v=<current number>`. If it shows an older number, the deploy didn't land.
 - The live layout files are in `/opt/netbox/netbox_cable_calc_repo/netbox_cable_calc/layouts/`. They're gitignored, so pulls don't touch them. The copies in `~/nbcc` are stale.
 
-There are no automated tests. To check a change, load the page in NetBox and watch the browser console.
+### Browser checks (`e2e/`)
+
+`e2e/check.js` drives the real page on the dev NetBox with headless Chromium (Playwright 1.56, which still supports the server's Node 18). It checks the bundle version, the site and location floor plans, scope switching, the Suite 15 BOM, the missing-bridge flag, CSRF and permissions, and that there are no errors. Screenshots go to `e2e/out/` (gitignored).
+
+```bash
+cd e2e && npm install && node check.js <session-file>
+```
+
+- It logs in as `cablecalc-e2e`, a NetBox user with no password and no permissions. The session file holds that user's `sessionid`; keep it outside the repo. To make a new one:
+  `cd /opt/netbox/netbox && sudo -u netbox /opt/netbox/venv/bin/python manage.py shell -c "from django.contrib.auth import get_user_model; from django.test import Client; c=Client(); c.force_login(get_user_model().objects.get(username='cablecalc-e2e')); print(c.cookies['sessionid'].value)" 2>/dev/null | tail -1 > <session-file>`
+- The only thing it changes is the BOM cache (it clicks "Calculate all cables"). Save checks post to a site with no racks and an empty length list, so they can't write even if the user gets permissions later.
+- Both dropdowns are TomSelect boxes; pick by label, not by position.
+- The expected `?v=N` is read from the template, so bumps don't need a script change.
+
+There are no unit tests.
 
 ## Key concepts
 
@@ -77,7 +91,13 @@ Recent work, in order:
 
 9. Missing-bridge flag (2026-11-24, bundle `v=22`): BOM rows have `missing_bridge: true` when a cable crosses rows but no floorplan route connects them (no bridge of its type, and no same-location aisle path). The BOM tab shows a warning with the count, a red "no bridge" badge per cable, and a "Missing bridge" CSV column. These lengths leave out the bridge run, so they are too short. (`4d93f57`)
 
-10. Single-location BOMs route with the whole site's floor plan (2026-11-24): `_build_cable_bom` builds the rack index and bridges site-wide; `location_id` only narrows which cables are listed. Every cable in a location's BOM now matches the site-wide BOM exactly. Fixes the 144 S14 to S15 cables that came out at 20 to 50 ft in each suite's BOM (now 80 to 95 ft).
+10. Single-location BOMs route with the whole site's floor plan (2026-11-24): `_build_cable_bom` builds the rack index and bridges site-wide; `location_id` only narrows which cables are listed. Every cable in a location's BOM now matches the site-wide BOM exactly. Fixes the 144 S14 to S15 cables that came out at 20 to 50 ft in each suite's BOM (now 80 to 95 ft). (`87b6a3e`)
+
+11. Permissions, CSRF and flag styling (2026-11-24, bundle `v=23`, CSS `v=3`):
+   - Saving a floor plan needs NetBox "change rack" permission on a rack in that site/location (`_can_edit_layout`, uses `Rack.objects.restrict`). Saving lengths needs `dcim.change_cable`, and only cables in `Cable.objects.restrict(user, "change")` are updated. Before, any logged-in user could do both.
+   - CSRF protection is back on every plugin view (all `csrf_exempt` removed). NetBox's `csrftoken` cookie is HttpOnly, so the template passes the token as `window.NETBOX_CSRF_TOKEN` and `csrfToken()` in floorplan.js sends it.
+   - "no bridge" is bold red text with a ⚠ (CSS class `cc-flag-danger`), as an exception to the plain-text badge style. The warning box no longer splits into columns.
+   - "Save lengths to NetBox" shows the server's error (e.g. permission denied) instead of "Saved undefined cables".
 
 Data change made outside git: the live `site_105.json` was cleaned (4 empty leftover rows and 2 broken bridges removed).
 
@@ -86,7 +106,8 @@ Data change made outside git: the live `site_105.json` was cleaned (4 empty left
 - **Debug logging is always on.** Remove it or put it behind a flag before merging to `main`. Debug messages use `console.error`, which makes them look like real errors.
 - **Browser Calculator and server BOM disagree.** `shortestPath` in floorplan.js needs a bridge at every row boundary, or it drops to straight-line distance.
 - **The BOM cache doesn't notice NetBox changes.** Edits to racks, devices or cables don't clear it. Use Recalculate.
-- **Save errors are hidden.** `saveToServer` drops the error in `catch(_)`, and `LayoutApiView` has no server-side logging.
+- **Plugin pages and GET APIs ignore NetBox view permissions.** They query the ORM directly, so any logged-in user sees all sites, racks, devices and cables through the plugin. Use `.restrict(user, "view")` if that matters.
+- **Floor plan save errors are hidden.** `saveToServer` only returns true/false, so a permission error just shows as a failed save. `LayoutApiView` has no server-side logging.
 - **The TomSelect handler may be redundant.** It sets `pendingLocation` alongside `handleLocationChange` (`onChange`). React skips the second update when the value is the same, so it's harmless but probably not needed.
 - **`layoutReady` is set but never read.** Either wire it up (for example, to disable saving while a layout loads) or remove it.
 - **No floor plan for racks that are in a site but not in any location.** The site view is read-only for rows. If those racks need laying out, the site view needs its own row editor.

@@ -15,6 +15,10 @@ function getCookie(name) {
   const v = document.cookie.match("(^|;)\\s*" + name + "\\s*=\\s*([^;]+)");
   return v ? v.pop() : "";
 }
+// NetBox's csrftoken cookie is HttpOnly, so the template passes the token in.
+export function csrfToken() {
+  return window.NETBOX_CSRF_TOKEN || getCookie("csrftoken");
+}
 
 export async function loadFromServer(siteId, locationId) {
   try {
@@ -48,7 +52,7 @@ export async function saveToServer(layout, bridges, siteId, locationId) {
     //console.log("saveToServer called, layout rows:", layout?.rows?.length, "positions:", Object.keys(layout?.rackPositions||{}).length);
     const res = await fetch("/plugins/cable-calc/layout/?" + params, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
+      headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken() },
       body: JSON.stringify({ layout, bridges }),
     });
     return res.ok;
