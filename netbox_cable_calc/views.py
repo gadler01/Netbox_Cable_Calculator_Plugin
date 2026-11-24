@@ -398,7 +398,7 @@ def _build_site_tree():
 
 # ── cable length calculator ───────────────────────────────────────────────────
 
-def _calc_length(src, dst, rack_index, cfg, bridge_graph=None):
+def _calc_length(src, dst, rack_index, cfg, bridge_graphs=None):
     row_spacing = float(cfg.get("aisle_width", 60))
     rack_depth  = float(cfg.get("rack_depth", 48))
     port_depth  = float(cfg.get("port_depth", 4))
@@ -458,7 +458,7 @@ def _calc_length(src, dst, rack_index, cfg, bridge_graph=None):
             "stock_ft": _std_len(with_slack, media),
             "media": media, "connector": connector,
             "cross_aisle": False, "fixed": slack_mult == 0,
-            "same_rack": True,
+            "same_rack": True, "missing_bridge": False,
             "breakdown": {"in_rack_vertical": round(vert, 2), "port_depth": round(depth_component, 2)},
         }
 
@@ -469,6 +469,9 @@ def _calc_length(src, dst, rack_index, cfg, bridge_graph=None):
     dst_pe = port_depth;  dst_v = ru_from_top(dst["ru"], dst_rack_u) + overhead
 
     cross_aisle = src_rack.get("row") != dst_rack.get("row")
+    # Fiber cables only use fiber bridges and copper only copper (bridges
+    # with no pathType carry both), matching the browser Calculator.
+    bridge_graph = (bridge_graphs or {}).get("fiber" if is_fiber else "copper")
     path = _bridge_path(bridge_graph, src_rack.get("row"), dst_rack.get("row"), row_spacing, bridge_len) \
         if (cross_aisle and bridge_graph) else None
 
@@ -523,6 +526,10 @@ def _calc_length(src, dst, rack_index, cfg, bridge_graph=None):
         "raw_ft": round(raw_ft, 2), "with_slack": round(with_slack, 2), "stock_ft": stock,
         "media": media, "connector": connector, "cross_aisle": cross_aisle,
         "fixed": slack_mult == 0, "same_rack": False,
+        # Crosses rows but no floorplan route (bridges of this cable's type,
+        # or same-location aisles) connects them, so the length is a rough
+        # estimate that leaves out any real bridge run.
+        "missing_bridge": bool(cross_aisle and not path),
         "breakdown": {
             "src_vertical": round(src_v, 2), "dst_vertical": round(dst_v, 2),
             "horizontal": round(horiz, 2), "row_travel": round(row_travel, 2),
@@ -574,7 +581,10 @@ def _endpoint_info_from_obj(obj, cfg=None):
 def _build_cable_bom(cfg, site_id=None, location_id=None):
     from dcim.models import CableTermination
     rack_index, bridges = _build_rack_index(cfg, site_id, location_id)
-    bridge_graph = _build_bridge_graph(bridges, rack_index)
+    bridge_graphs = {
+        kind: _build_bridge_graph([b for b in bridges if not b.get("pathType") or b.get("pathType") == kind], rack_index)
+        for kind in ("fiber", "copper")
+    }
 
     from django.db.models import Q
     dev_qs = Device.objects.filter(rack__isnull=False)
@@ -654,13 +664,13 @@ def _build_cable_bom(cfg, site_id=None, location_id=None):
             continue
         try:
             src_with_cable = {**src_info, "cable_type": cable.type or ""}
-            result = _calc_length(src_with_cable, dst_info, rack_index, cfg, bridge_graph)
+            result = _calc_length(src_with_cable, dst_info, rack_index, cfg, bridge_graphs)
         except Exception as e:
             result = {
                 "raw_ft": 0, "with_slack": 0, "stock_ft": 0,
                 "media": "unknown", "connector": "unknown",
                 "cross_aisle": False, "fixed": False, "same_rack": False,
-                "error": str(e), "breakdown": {},
+                "missing_bridge": False, "error": str(e), "breakdown": {},
             }
         rows.append({
             "cable_id": cable.pk, "cable_label": cable.label or f"Cable {cable.pk}",

@@ -71,15 +71,18 @@ Recent work, in order:
    - Equal-length routes still pick the lowest-x bridge.
    - Saving any layout clears every cached BOM for that site (`_clear_bom_cache`). Before, the cache was never cleared on save, so the BOM tab could show stale numbers.
 
-7. Rear-exit vertical run (2026-11-24, bundle `v=21`): rear exits now use the same rule as front, `(rack_u - ru) * U + overhead`, in both `_calc_length` and the browser Calculator. Confirmed by the user: rear cables route exactly like front cables. The browser Calculator now also uses `portDepth` (4 in) for rear ports, matching the server, and adds `rackDepth` only for a same-rack front-to-rear run (same as the server). The old rule ran down to the floor and back up the full rack. This change shortens site 105's BOM by 8,184 ft in total (80,616 -> 72,432 ft).
+7. Rear-exit vertical run (2026-11-24, bundle `v=21`): rear exits now use the same rule as front, `(rack_u - ru) * U + overhead`, in both `_calc_length` and the browser Calculator. Confirmed by the user: rear cables route exactly like front cables. The browser Calculator now also uses `portDepth` (4 in) for rear ports, matching the server, and adds `rackDepth` only for a same-rack front-to-rear run (same as the server). The old rule ran down to the floor and back up the full rack. This change shortens site 105's BOM by 8,184 ft in total (80,616 -> 72,432 ft). (`14c81f7`)
+
+8. Fiber/copper bridges (2026-11-24): `_build_cable_bom` builds one bridge graph per path type, and `_calc_length` picks the graph matching the cable (fiber = om3/om4/os2/aoc). Bridges with no `pathType` go in both graphs, same rule as the browser Calculator. Before, every cable used whichever equal-length bridge had the lowest x, so 96 fiber cables in site 105 used the copper bridge.
+
+9. Missing-bridge flag (2026-11-24, bundle `v=22`): BOM rows have `missing_bridge: true` when a cable crosses rows but no floorplan route connects them (no bridge of its type, and no same-location aisle path). The BOM tab shows a warning with the count, a red "no bridge" badge per cable, and a "Missing bridge" CSV column. These lengths leave out the bridge run, so they are too short.
 
 Data change made outside git: the live `site_105.json` was cleaned (4 empty leftover rows and 2 broken bridges removed).
 
 ## Known issues / next steps
 
 - **Debug logging is always on.** Remove it or put it behind a flag before merging to `main`. Debug messages use `console.error`, which makes them look like real errors.
-- **Site 105 has no cross-location bridges now.** Re-create the S14 to S15 bridges in the site view.
-- **Bridges ignore fiber/copper on the server.** `_build_bridge_graph` doesn't filter by `pathType`, so fiber cables can route over a copper bridge. The browser Calculator does filter.
+- **Single-location BOMs can't route cables to other locations.** A location's BOM only loads that location's floor plan, so cables to another location never see the site-level bridges. In site 105, the 144 S14 to S15 cables are flagged "no bridge" in each suite's BOM (20 to 50 ft there, against about 85 to 100 ft in the site-wide BOM). Use the site-wide BOM for these, or make location BOMs route with the site-wide layout.
 - **Browser Calculator and server BOM disagree.** `shortestPath` in floorplan.js needs a bridge at every row boundary, or it drops to straight-line distance.
 - **The BOM cache doesn't notice NetBox changes.** Edits to racks, devices or cables don't clear it. Use Recalculate.
 - **Save errors are hidden.** `saveToServer` drops the error in `catch(_)`, and `LayoutApiView` has no server-side logging.

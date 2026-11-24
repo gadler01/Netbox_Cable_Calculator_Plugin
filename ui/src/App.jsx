@@ -152,8 +152,8 @@ function exportManualCSV(hops,results) {
   downloadCSV("cable_bom_manual.csv",[hdr,...rows]);
 }
 function exportBulkCSV(cables) {
-  const hdr=["Cable ID","Color","Label","From device","From iface","From rack","From RU","From face","To device","To iface","To rack","To RU","To face","Media","Connector","Calc","Stock","Unit","Cross-aisle"];
-  const rows=cables.map(c=>[c.cable_id,c.cable_color?"#"+c.cable_color:"",c.cable_label,c.src_device,c.src_iface,c.src_rack,c.src_ru,c.src_face,c.dst_device,c.dst_iface,c.dst_rack,c.dst_ru,c.dst_face,c.media,c.connector,c.with_slack,c.stock_ft,c.unit??"ft",c.cross_aisle?"Yes":"No"]);
+  const hdr=["Cable ID","Color","Label","From device","From iface","From rack","From RU","From face","To device","To iface","To rack","To RU","To face","Media","Connector","Calc","Stock","Unit","Cross-aisle","Missing bridge"];
+  const rows=cables.map(c=>[c.cable_id,c.cable_color?"#"+c.cable_color:"",c.cable_label,c.src_device,c.src_iface,c.src_rack,c.src_ru,c.src_face,c.dst_device,c.dst_iface,c.dst_rack,c.dst_ru,c.dst_face,c.media,c.connector,c.with_slack,c.stock_ft,c.unit??"ft",c.cross_aisle?"Yes":"No",c.missing_bridge?"Yes":"No"]);
   downloadCSV("cable_bom_bulk.csv",[hdr,...rows]);
 }
 function downloadCSV(filename,rows) {
@@ -315,6 +315,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
   const connectorOptions = [...new Set(cables.map(c=>c.connector))].sort();
   const stockFtOptions   = [...new Set(cables.map(c=>c.stock_ft))].sort((a,b)=>a-b);
   const thStyle={cursor:"pointer",userSelect:"none",whiteSpace:"nowrap"};
+  const missingBridgeCount=cables.filter(c=>c.missing_bridge).length;
   const sort=key=>{setSortDir(sortKey===key?-sortDir:1);setSortKey(key);};
   const arrow=key=>sortKey===key?(sortDir===1?" ↑":" ↓"):"";
 
@@ -334,6 +335,12 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
 
       {error&&<div className="alert alert-danger py-2">{error}</div>}
       {saveMsg&&<div className={`alert py-2 ${saveMsg.startsWith("Error")?"alert-danger":"alert-success"}`}>{saveMsg}</div>}
+
+      {missingBridgeCount>0&&<div className="alert alert-warning py-2" style={{fontSize:13}}>
+        <strong>{missingBridgeCount} cable{missingBridgeCount===1?"":"s"} cross rows with no bridge route</strong> (flagged "no bridge" below).
+        Their lengths are rough estimates that leave out any bridge run, so they are likely too short.
+        Add a matching fiber/copper bridge in the floor plan, then recalculate, before ordering or saving lengths to NetBox.
+      </div>}
 
       {cables.length>0&&(<>
         <div className="card mb-3">
@@ -421,7 +428,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
                     <td><Pill>{c.connector}</Pill></td>
                     <td>{c.with_slack} ft</td>
                     <td><strong>{c.stock_ft} {c.unit??"ft"}</strong></td>
-                    <td>{c.cross_aisle&&<Badge color="warning">X-aisle</Badge>}{c.same_rack&&<Badge color="secondary">same rack</Badge>}{c.error&&<Badge color="danger">err</Badge>}</td>
+                    <td>{c.cross_aisle&&<Badge color="warning">X-aisle</Badge>}{c.missing_bridge&&<span title="No floor plan bridge route between these rows; length is a rough estimate"><Badge color="danger">no bridge</Badge></span>}{c.same_rack&&<Badge color="secondary">same rack</Badge>}{c.error&&<Badge color="danger">err</Badge>}</td>
                   </tr>
                 ))}
               </tbody>
