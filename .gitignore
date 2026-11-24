@@ -33,3 +33,7 @@ Thumbs.db
 # Gunicorn / runtime
 *.pid
 *.log
+
+# Headless browser checks
+e2e/node_modules/
+e2e/out/
