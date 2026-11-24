@@ -111,9 +111,11 @@ Recent work, in order:
 
 13. Repo cleanup (2026-11-24, `b23d358`): stopped tracking `build/`, `netbox_cable_calc.egg-info/` and `__pycache__/views.cpython-312.pyc`; deleted the unused `views.py.simple` and `static/.../calculator.js`. The dev install is a modern editable one (metadata in the venv's `dist-info`), so it doesn't need `egg-info`.
 
-14. Debug logging removed (2026-11-24, bundle `v=24`): all `DEBUG:` and trace `console.error`/`console.log` calls are gone from App.jsx and floorplan.js. Only real error logs remain (failed rack/device or layout fetches). `e2e/check.js` now fails on any console error except the 3 deliberate 403s.
+14. Debug logging removed (2026-11-24, bundle `v=24`): all `DEBUG:` and trace `console.error`/`console.log` calls are gone from App.jsx and floorplan.js. Only real error logs remain (failed rack/device or layout fetches). `e2e/check.js` now fails on any console error except the 3 deliberate 403s. (`9279d95`)
 
-Nothing is merged to `main` yet.
+**Status:** `v=24` is deployed on the dev NetBox and `e2e/check.js` passes 20/20 with the stricter console check. `~/nbcc`, GitHub `origin/development` and the deploy checkout are in sync. Nothing is merged to `main` yet.
+
+**Before merging to `main`, decide on:** read permissions on the plugin's pages and GET APIs, and the browser Calculator vs. server BOM mismatch (both under Known issues).
 
 Data change made outside git: the live `site_105.json` was cleaned (4 empty leftover rows and 2 broken bridges removed).
 
