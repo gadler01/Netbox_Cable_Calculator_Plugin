@@ -86,7 +86,7 @@ Recent work, in order:
    - `popstate` (back/forward) copies the URL into `pendingSite`/`pendingLocation`, and the effect above does the reload.
    - `_namespace_layout` leaves any id that already has a `:` alone. Before this, site-level bridges loaded as `site:loc126:row-?`.
    - The site file stores bridges only, and empty site-level rows are hidden in the site view.
-   - Temporary `console.error("DEBUG: ...")` logging in App.jsx.
+   - Temporary `console.error("DEBUG: ...")` logging in App.jsx (removed in item 14).
 
 6. Bridge routing and BOM cache fixes (2026-11-24, `81cb504`):
    - `_build_bridge_graph` adds estimated edges between consecutive rows in the same location (unless a real bridge already joins them). A cable from a row with no bridge can now cross to a row that has one, e.g. S14 Row 2 -> Row 1 -> bridge -> S15. Before, those 72 cables fell back to a rough estimate with no bridge and came out at 30 to 34 ft instead of 97 to 100 ft. `bridge_source` can now be `floorplan+estimated`.
@@ -111,14 +111,15 @@ Recent work, in order:
 
 13. Repo cleanup (2026-11-24, `b23d358`): stopped tracking `build/`, `netbox_cable_calc.egg-info/` and `__pycache__/views.cpython-312.pyc`; deleted the unused `views.py.simple` and `static/.../calculator.js`. The dev install is a modern editable one (metadata in the venv's `dist-info`), so it doesn't need `egg-info`.
 
-`~/nbcc`, GitHub `origin/development` and the deploy checkout are all on `b23d358`. Nothing is merged to `main` yet.
+14. Debug logging removed (2026-11-24, bundle `v=24`): all `DEBUG:` and trace `console.error`/`console.log` calls are gone from App.jsx and floorplan.js. Only real error logs remain (failed rack/device or layout fetches). `e2e/check.js` now fails on any console error except the 3 deliberate 403s.
+
+Nothing is merged to `main` yet.
 
 Data change made outside git: the live `site_105.json` was cleaned (4 empty leftover rows and 2 broken bridges removed).
 
 ## Known issues / next steps
 
 - **Saves now need NetBox permissions.** Users who aren't superusers need "change rack" (floor plans) and "change cable" (lengths), or their saves are refused.
-- **Debug logging is always on.** Remove it or put it behind a flag before merging to `main`. Debug messages use `console.error`, which makes them look like real errors.
 - **Browser Calculator and server BOM disagree.** `shortestPath` in floorplan.js needs a bridge at every row boundary, or it drops to straight-line distance.
 - **The BOM cache doesn't notice NetBox changes.** Edits to racks, devices or cables don't clear it. Use Recalculate.
 - **Plugin pages and GET APIs ignore NetBox view permissions.** They query the ORM directly, so any logged-in user sees all sites, racks, devices and cables through the plugin. Use `.restrict(user, "view")` if that matters.

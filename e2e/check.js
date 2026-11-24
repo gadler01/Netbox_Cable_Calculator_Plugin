@@ -32,7 +32,7 @@ const check = (name, ok, detail = "") => {
   const page = await context.newPage();
 
   const consoleErrors = [], pageErrors = [], failedRequests = [];
-  page.on("console", m => { if (m.type() === "error" && !m.text().startsWith("DEBUG") && !/^(URL changed|Location changed|TomSelect changed|loadFromServer)/.test(m.text())) consoleErrors.push(m.text()); });
+  page.on("console", m => { if (m.type() === "error") consoleErrors.push(m.text()); });
   page.on("pageerror", e => pageErrors.push(e.message));
   page.on("response", r => { if (r.url().includes("/plugins/cable-calc/") && r.status() >= 400) failedRequests.push(`${r.status()} ${r.url()}`); });
 
@@ -164,7 +164,7 @@ const check = (name, ok, detail = "") => {
   // The browser logs each of the 3 deliberate 403 saves above as a console error.
   const deliberate403 = consoleErrors.filter(t => /status of 403/.test(t)).length;
   const otherConsole = consoleErrors.filter(t => !/status of 403/.test(t));
-  check("no console errors (besides DEBUG logs and the 3 deliberate 403s)", otherConsole.length === 0 && deliberate403 <= 3, [...otherConsole.slice(0, 3), deliberate403 > 3 ? `${deliberate403} 403s` : ""].filter(Boolean).join(" | "));
+  check("no console errors (besides the 3 deliberate 403s)", otherConsole.length === 0 && deliberate403 <= 3, [...otherConsole.slice(0, 3), deliberate403 > 3 ? `${deliberate403} 403s` : ""].filter(Boolean).join(" | "));
   const unexpected = failedRequests.filter(r => !r.startsWith("403 ") || !/site_id=999999999|\/bom\/$/.test(r));
   check("no failed plugin requests (besides the deliberate 403s)", unexpected.length === 0, unexpected.slice(0, 3).join(" | "));
 

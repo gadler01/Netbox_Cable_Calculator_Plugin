@@ -443,7 +443,6 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
 }
 
 export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}) {
-  console.error("DEBUG: App component rendering. selected=", selected);
   const [infra,setInfra]     = useState(()=>infraFromCfg(cfg));
   const [tab,setTab]         = useState("calc");
   const [hops,setHops]       = useState([mkHop("Device to patch panel"),mkHop("Panel to panel cross-connect","10gbase-sr"),mkHop("Patch panel to device")]);
@@ -540,7 +539,6 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   // update the URL with replaceState (no popstate), so this has to key off
   // React state, not window.location.
   useEffect(()=>{
-    console.error("DEBUG: scope changed: site=" + pendingSite + " location=" + pendingLocation);
     if (!pendingSite) {
       setLayout({rows:[],rackPositions:{}});
       setBridges([]);
@@ -556,8 +554,7 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
     setBridges([]);
     setLayoutReady(false);
     loadFromServer(pendingSite, pendingLocation).then(data=>{
-      if (stale) { console.error("DEBUG: dropped stale layout for site=" + pendingSite + " location=" + pendingLocation); return; }
-      console.error("DEBUG: loadFromServer returned:", data ? "DATA with " + data.layout.rows.length + " rows" : "null");
+      if (stale) return;
       setLayout(data?.layout||{rows:[],rackPositions:{}});
       setBridges(data?.bridges||[]);
       setLayoutReady(true);
@@ -575,7 +572,6 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   useEffect(()=>{
     const handlePopState = () => {
       const params = new URLSearchParams(window.location.search);
-      console.error("DEBUG: popstate: site_id=" + params.get("site_id") + " location_id=" + params.get("location_id"));
       setPendingSite(params.get("site_id") || "");
       setPendingLocation(params.get("location_id") || "");
     };
@@ -664,7 +660,6 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
     // Hook TomSelect change event to update pendingLocation
     const handleTomSelectChange = () => {
       const selectedValue = ts.getValue();
-      console.error("TomSelect changed to:", selectedValue);
       setPendingLocation(String(selectedValue || ""));
     };
 
@@ -688,7 +683,6 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   //Handle location selection change
   const handleLocationChange = (e) => {
     const selectedLocationId = e.target.value;
-    console.error("Location changed to:", selectedLocationId);
     setPendingLocation(selectedLocationId);
   }
 
