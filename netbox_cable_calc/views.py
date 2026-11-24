@@ -463,15 +463,10 @@ def _calc_length(src, dst, rack_index, cfg, bridge_graph=None):
         }
 
     # Different racks — route via overhead tray
-    if src["face"] == "front":
-        src_pe = port_depth;  src_v = ru_from_top(src["ru"], src_rack_u) + overhead
-    else:
-        src_pe = port_depth;  src_v = (float(src["ru"]) - 1) * U_HEIGHT + src_rack_u * U_HEIGHT + overhead
-
-    if dst["face"] == "front":
-        dst_pe = port_depth;  dst_v = ru_from_top(dst["ru"], dst_rack_u) + overhead
-    else:
-        dst_pe = port_depth;  dst_v = dst_rack_u * U_HEIGHT + (float(dst["ru"]) - 1) * U_HEIGHT + overhead
+    # Front and rear exits both run straight up from the device to the top
+    # of the rack, then up to the overhead tray.
+    src_pe = port_depth;  src_v = ru_from_top(src["ru"], src_rack_u) + overhead
+    dst_pe = port_depth;  dst_v = ru_from_top(dst["ru"], dst_rack_u) + overhead
 
     cross_aisle = src_rack.get("row") != dst_rack.get("row")
     path = _bridge_path(bridge_graph, src_rack.get("row"), dst_rack.get("row"), row_spacing, bridge_len) \

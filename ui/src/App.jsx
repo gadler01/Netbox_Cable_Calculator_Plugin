@@ -81,8 +81,9 @@ function calcSegment(src,dst,infra,ifaceKey,layout,bridges) {
   const sameRack = src.rackId&&dst.rackId&&src.rackId===dst.rackId;
   if (sameRack) {
     const vert = Math.abs((src.ru-1)*U_HEIGHT-(dst.ru-1)*U_HEIGHT);
-    const srcPE = src.face==="front"?portDepth:rackDepth;
-    const dstPE = dst.face==="front"?portDepth:rackDepth;
+    // Port depth at each end; a front-to-rear run also crosses the rack.
+    const srcPE = portDepth;
+    const dstPE = portDepth+(src.face!==dst.face?rackDepth:0);
     const rawIn = vert+srcPE+dstPE;
     const rawFt = rawIn/12;
     const effSlk = media.fixedLength?0:slack*media.slackMult;
@@ -94,12 +95,9 @@ function calcSegment(src,dst,infra,ifaceKey,layout,bridges) {
             crossAisle:false,rowsCrossed:0,bridgesUsed:[],sameRack:true,pathResult:null,iface,media};
   }
 
-  let srcV,srcPE;
-  if (src.face==="front"){srcPE=portDepth; srcV=ruFromTop(src.ru,src.rackU)+overhead;}
-  else                   {srcPE=rackDepth; srcV=(src.ru-1)*U_HEIGHT+src.rackU*U_HEIGHT+overhead;}
-  let dstV,dstPE;
-  if (dst.face==="front"){dstPE=portDepth; dstV=ruFromTop(dst.ru,dst.rackU)+overhead;}
-  else                   {dstPE=rackDepth; dstV=dst.rackU*U_HEIGHT+(dst.ru-1)*U_HEIGHT+overhead;}
+  // Front and rear exits both run straight up to the rack top, then to the tray.
+  const srcPE=portDepth, srcV=ruFromTop(src.ru,src.rackU)+overhead;
+  const dstPE=portDepth, dstV=ruFromTop(dst.ru,dst.rackU)+overhead;
 
   const cablePathType = pathType(iface.media);
   const relevantBridges = (bridges||[]).filter(b=>!b.pathType||b.pathType===cablePathType);
@@ -919,8 +917,8 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
               ["copperOverhead",     "Ladder rack height",      "Rack top to ladder rack (Cat6/DAC)",      "in"],
               ["copperBridgeLength", "Copper bridge length",    "Per cross-aisle copper bridge",           "in"],
               ["rowSpacing",         "Aisle width",             "Between rows",                            "in"],
-              ["rackDepth",          "Rack depth",              "Rear-exit cable path",                    "in"],
-              ["portDepth",          "Port depth",              "Front-exit path",                         "in"],
+              ["rackDepth",          "Rack depth",              "Front-to-rear in same rack",              "in"],
+              ["portDepth",          "Port depth",              "Each cable end",                          "in"],
               ["slack",              "Slack / service loop",    "",                                        "%"],
             ].map(([k,label,hint,unit])=>(
               <div key={k} className="row align-items-center mb-2">
