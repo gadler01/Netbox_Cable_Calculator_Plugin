@@ -12,7 +12,6 @@ A NetBox 4.x plugin (`netbox_cable_calc`) that calculates cable lengths for data
 - `netbox_cable_calc/urls.py`: routes `""` (page), `bom/`, `layout/`, `racks/`, `devices/`.
 - `netbox_cable_calc/templates/netbox_cable_calc/calculator.html`: injects `window.NETBOX_*` data and loads the bundle.
 - `netbox_cable_calc/layouts/`: saved floor plans and BOM caches written at runtime (`site_{id}.json`, `site_{id}_loc_{id}.json`, `*_bom_cache.json`). Gitignored, so never commit them.
-- `netbox_cable_calc/views.py.simple`: an old copy of views.py. It isn't used.
 - `ui/src/`: React source.
   - `App.jsx`: main component, scope (site/location) state, tabs, save/load wiring.
   - `FloorPlan.jsx`: single-location floor plan editor.
