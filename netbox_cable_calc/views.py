@@ -580,7 +580,10 @@ def _endpoint_info_from_obj(obj, cfg=None):
 
 def _build_cable_bom(cfg, site_id=None, location_id=None):
     from dcim.models import CableTermination
-    rack_index, bridges = _build_rack_index(cfg, site_id, location_id)
+    # Route with the whole site's floor plan even for a single location, so
+    # a cable to another location still sees that location's racks and the
+    # site-level bridges. location_id only narrows which cables are listed.
+    rack_index, bridges = _build_rack_index(cfg, site_id, None if site_id else location_id)
     bridge_graphs = {
         kind: _build_bridge_graph([b for b in bridges if not b.get("pathType") or b.get("pathType") == kind], rack_index)
         for kind in ("fiber", "copper")

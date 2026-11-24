@@ -75,14 +75,15 @@ Recent work, in order:
 
 8. Fiber/copper bridges (2026-11-24): `_build_cable_bom` builds one bridge graph per path type, and `_calc_length` picks the graph matching the cable (fiber = om3/om4/os2/aoc). Bridges with no `pathType` go in both graphs, same rule as the browser Calculator. Before, every cable used whichever equal-length bridge had the lowest x, so 96 fiber cables in site 105 used the copper bridge.
 
-9. Missing-bridge flag (2026-11-24, bundle `v=22`): BOM rows have `missing_bridge: true` when a cable crosses rows but no floorplan route connects them (no bridge of its type, and no same-location aisle path). The BOM tab shows a warning with the count, a red "no bridge" badge per cable, and a "Missing bridge" CSV column. These lengths leave out the bridge run, so they are too short.
+9. Missing-bridge flag (2026-11-24, bundle `v=22`): BOM rows have `missing_bridge: true` when a cable crosses rows but no floorplan route connects them (no bridge of its type, and no same-location aisle path). The BOM tab shows a warning with the count, a red "no bridge" badge per cable, and a "Missing bridge" CSV column. These lengths leave out the bridge run, so they are too short. (`4d93f57`)
+
+10. Single-location BOMs route with the whole site's floor plan (2026-11-24): `_build_cable_bom` builds the rack index and bridges site-wide; `location_id` only narrows which cables are listed. Every cable in a location's BOM now matches the site-wide BOM exactly. Fixes the 144 S14 to S15 cables that came out at 20 to 50 ft in each suite's BOM (now 80 to 95 ft).
 
 Data change made outside git: the live `site_105.json` was cleaned (4 empty leftover rows and 2 broken bridges removed).
 
 ## Known issues / next steps
 
 - **Debug logging is always on.** Remove it or put it behind a flag before merging to `main`. Debug messages use `console.error`, which makes them look like real errors.
-- **Single-location BOMs can't route cables to other locations.** A location's BOM only loads that location's floor plan, so cables to another location never see the site-level bridges. In site 105, the 144 S14 to S15 cables are flagged "no bridge" in each suite's BOM (20 to 50 ft there, against about 85 to 100 ft in the site-wide BOM). Use the site-wide BOM for these, or make location BOMs route with the site-wide layout.
 - **Browser Calculator and server BOM disagree.** `shortestPath` in floorplan.js needs a bridge at every row boundary, or it drops to straight-line distance.
 - **The BOM cache doesn't notice NetBox changes.** Edits to racks, devices or cables don't clear it. Use Recalculate.
 - **Save errors are hidden.** `saveToServer` drops the error in `catch(_)`, and `LayoutApiView` has no server-side logging.
