@@ -161,7 +161,10 @@ const check = (name, ok, detail = "") => {
 
   // 7. No errors along the way
   check("no page errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
-  check("no console errors (besides DEBUG logs)", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
+  // The browser logs each of the 3 deliberate 403 saves above as a console error.
+  const deliberate403 = consoleErrors.filter(t => /status of 403/.test(t)).length;
+  const otherConsole = consoleErrors.filter(t => !/status of 403/.test(t));
+  check("no console errors (besides DEBUG logs and the 3 deliberate 403s)", otherConsole.length === 0 && deliberate403 <= 3, [...otherConsole.slice(0, 3), deliberate403 > 3 ? `${deliberate403} 403s` : ""].filter(Boolean).join(" | "));
   const unexpected = failedRequests.filter(r => !r.startsWith("403 ") || !/site_id=999999999|\/bom\/$/.test(r));
   check("no failed plugin requests (besides the deliberate 403s)", unexpected.length === 0, unexpected.slice(0, 3).join(" | "));
 
