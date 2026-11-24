@@ -1,3 +1,4 @@
+import glob
 import os
 import re
 import json
@@ -217,36 +218,71 @@ def _load_scoped_layout(site_id, location_id):
     return rows, rack_positions, list(bridges_by_id.values())
 
 
-def _build_bridge_graph(bridges):
+def _build_bridge_graph(bridges, rack_index=None):
+    """
+    Edges are (neighbor, length_in, x, rows_crossed). Real floorplan bridges
+    have rows_crossed=None. If rack_index is given, consecutive rows within
+    the same location are also linked by an estimated edge (x=None,
+    rows_crossed=row_index gap) unless a real bridge already joins them, so
+    a cable can cross a same-location aisle to reach a row that has a
+    floorplan bridge (e.g. S14 Row 2 -> Row 1 -> bridge -> S15 Row 1)
+    instead of skipping the bridge entirely.
+    """
     graph = {}
+    linked = set()
     for b in bridges:
         row_a, row_b = b.get('rowIdA'), b.get('rowIdB')
         if not row_a or not row_b:
             continue
         length = float(b.get('lengthIn', 0) or 0)
         x = float(b.get('x', 0) or 0)
-        graph.setdefault(row_a, []).append((row_b, length, x))
-        graph.setdefault(row_b, []).append((row_a, length, x))
+        graph.setdefault(row_a, []).append((row_b, length, x, None))
+        graph.setdefault(row_b, []).append((row_a, length, x, None))
+        linked.add(frozenset((row_a, row_b)))
+
+    rows_by_loc = {}
+    for r in (rack_index or {}).values():
+        if r.get("resolved") and r.get("row") is not None:
+            rows_by_loc.setdefault(r.get("location_id"), {})[r["row"]] = r["row_index"]
+    for rows in rows_by_loc.values():
+        ordered = sorted(rows.items(), key=lambda kv: kv[1])
+        for (row_a, idx_a), (row_b, idx_b) in zip(ordered, ordered[1:]):
+            if frozenset((row_a, row_b)) in linked:
+                continue
+            gap = idx_b - idx_a
+            graph.setdefault(row_a, []).append((row_b, None, None, gap))
+            graph.setdefault(row_b, []).append((row_a, None, None, gap))
+    # Equal-length routes go to the lowest-x bridge, as before.
+    for edges in graph.values():
+        edges.sort(key=lambda e: (e[3] is not None, e[2] if e[2] is not None else 0.0))
     return graph
 
 
-def _bridge_path(graph, row_a, row_b):
-    """Dijkstra shortest path by lengthIn. Returns a list of (length, x) edges, or None."""
+def _bridge_path(graph, row_a, row_b, row_spacing=0.0, bridge_len=0.0):
+    """
+    Dijkstra shortest path. Real bridges weigh their lengthIn; estimated
+    same-location edges weigh rows_crossed * (row_spacing + bridge_len).
+    Returns a list of (length, x, rows_crossed) edges, or None.
+    """
     if row_a not in graph or row_b not in graph:
         return None
     import heapq
     seen = set()
-    heap = [(0.0, row_a, [])]
+    counter = 0  # tie-breaker so heapq never compares paths
+    heap = [(0.0, counter, row_a, [])]
     while heap:
-        dist, node, path = heapq.heappop(heap)
+        dist, _, node, path = heapq.heappop(heap)
         if node in seen:
             continue
         seen.add(node)
         if node == row_b:
             return path
-        for neighbor, length, x in graph.get(node, []):
-            if neighbor not in seen:
-                heapq.heappush(heap, (dist + length, neighbor, path + [(length, x)]))
+        for neighbor, length, x, crossed in graph.get(node, []):
+            if neighbor in seen:
+                continue
+            weight = length if crossed is None else crossed * (row_spacing + bridge_len)
+            counter += 1
+            heapq.heappush(heap, (dist + weight, counter, neighbor, path + [(length, x, crossed)]))
     return None
 
 
@@ -438,18 +474,28 @@ def _calc_length(src, dst, rack_index, cfg, bridge_graph=None):
         dst_pe = port_depth;  dst_v = dst_rack_u * U_HEIGHT + (float(dst["ru"]) - 1) * U_HEIGHT + overhead
 
     cross_aisle = src_rack.get("row") != dst_rack.get("row")
-    path = _bridge_path(bridge_graph, src_rack.get("row"), dst_rack.get("row")) \
+    path = _bridge_path(bridge_graph, src_rack.get("row"), dst_rack.get("row"), row_spacing, bridge_len) \
         if (cross_aisle and bridge_graph) else None
 
     if path:
-        # Use the floorplan's actual measured bridge run(s): rack -> bridge
-        # point -> ... -> bridge point -> rack, instead of a generic estimate.
-        first_x, last_x = path[0][1], path[-1][1]
-        horiz = (abs(first_x - float(src_rack.get("center_offset", 0))) +
-                 abs(last_x - float(dst_rack.get("center_offset", 0))))
-        bridge_total = sum(length for length, _x in path)
-        row_travel = 0
-        bridge_source = "floorplan"
+        # Walk the path: real bridges move the cable to the bridge's x and
+        # add its measured lengthIn; estimated same-location crossings go
+        # straight across at the current x.
+        cur_x = float(src_rack.get("center_offset", 0))
+        horiz = row_travel = bridge_total = 0.0
+        real = estimated = False
+        for length, x, crossed in path:
+            if crossed is None:
+                horiz += abs(x - cur_x)
+                cur_x = x
+                bridge_total += length
+                real = True
+            else:
+                row_travel += crossed * row_spacing
+                bridge_total += crossed * bridge_len
+                estimated = True
+        horiz += abs(float(dst_rack.get("center_offset", 0)) - cur_x)
+        bridge_source = ("floorplan+estimated" if estimated else "floorplan") if real else "estimated"
     else:
         horiz = abs(float(dst_rack.get("center_offset", 0)) - float(src_rack.get("center_offset", 0)))
         rows_crossed = abs(src_rack.get("row_index", 0) - dst_rack.get("row_index", 0))
@@ -533,7 +579,7 @@ def _endpoint_info_from_obj(obj, cfg=None):
 def _build_cable_bom(cfg, site_id=None, location_id=None):
     from dcim.models import CableTermination
     rack_index, bridges = _build_rack_index(cfg, site_id, location_id)
-    bridge_graph = _build_bridge_graph(bridges)
+    bridge_graph = _build_bridge_graph(bridges, rack_index)
 
     from django.db.models import Q
     dev_qs = Device.objects.filter(rack__isnull=False)
@@ -645,6 +691,19 @@ def _bom_cache_path(site_id, location_id=None):
         key += f"_loc_{location_id}"
     return os.path.join(LAYOUT_DIR, f"{key}_bom_cache.json")
 
+def _clear_bom_cache(site_id):
+    """
+    Delete every cached BOM for a site. A location's floorplan feeds the
+    site-wide BOM, and the site file's bridges feed cross-location routing,
+    so any layout save for the site can change any of its cached BOMs.
+    """
+    for path in glob.glob(os.path.join(LAYOUT_DIR, f"site_{site_id}_bom_cache.json")) + \
+                glob.glob(os.path.join(LAYOUT_DIR, f"site_{site_id}_loc_*_bom_cache.json")):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
 def _layout_path(site_id, location_id=None):
     os.makedirs(LAYOUT_DIR, exist_ok=True)
     key = f"site_{site_id}"
@@ -733,6 +792,7 @@ class LayoutApiView(LoginRequiredMixin, View):
             path = _layout_path(site_id, location_id)
             with open(path, "w") as f:
                 json.dump({"layout": body.get("layout", {}), "bridges": body.get("bridges", [])}, f, indent=2)
+            _clear_bom_cache(site_id)
             return JsonResponse({"saved": True})
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)

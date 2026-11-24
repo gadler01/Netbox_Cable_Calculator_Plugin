@@ -66,12 +66,21 @@ Recent work, in order:
    - The site file stores bridges only, and empty site-level rows are hidden in the site view.
    - Temporary `console.error("DEBUG: ...")` logging in App.jsx.
 
+6. Bridge routing and BOM cache fixes (2026-11-24, uncommitted):
+   - `_build_bridge_graph` adds estimated edges between consecutive rows in the same location (unless a real bridge already joins them). A cable from a row with no bridge can now cross to a row that has one, e.g. S14 Row 2 -> Row 1 -> bridge -> S15. Before, those 72 cables fell back to a rough estimate with no bridge and came out at 30 to 34 ft instead of 97 to 100 ft. `bridge_source` can now be `floorplan+estimated`.
+   - Equal-length routes still pick the lowest-x bridge.
+   - Saving any layout clears every cached BOM for that site (`_clear_bom_cache`). Before, the cache was never cleared on save, so the BOM tab could show stale numbers.
+
 Data change made outside git: the live `site_105.json` was cleaned (4 empty leftover rows and 2 broken bridges removed).
 
 ## Known issues / next steps
 
 - **Debug logging is always on.** Remove it or put it behind a flag before merging to `main`. Debug messages use `console.error`, which makes them look like real errors.
 - **Site 105 has no cross-location bridges now.** Re-create the S14 to S15 bridges in the site view.
+- **Bridges ignore fiber/copper on the server.** `_build_bridge_graph` doesn't filter by `pathType`, so fiber cables can route over a copper bridge. The browser Calculator does filter.
+- **Rear-exit vertical run may be inflated.** For rear exits, `_calc_length` counts the run down to the floor, up the full rack, then to the tray: `(ru-1)*U + rack_u*U + overhead`. The front-exit rule is `(rack_u-ru)*U + overhead`. That's about 7.7 ft extra per end at RU 27 in a 44U rack. Needs the user's confirmation of the real cable route before changing.
+- **Browser Calculator and server BOM disagree.** `shortestPath` in floorplan.js needs a bridge at every row boundary, or it drops to straight-line distance. The browser also uses `rackDepth` for rear port depth, where the server uses `port_depth`.
+- **The BOM cache doesn't notice NetBox changes.** Edits to racks, devices or cables don't clear it. Use Recalculate.
 - **Save errors are hidden.** `saveToServer` drops the error in `catch(_)`, and `LayoutApiView` has no server-side logging.
 - **The TomSelect handler may be redundant.** It sets `pendingLocation` alongside `handleLocationChange` (`onChange`). React skips the second update when the value is the same, so it's harmless but probably not needed.
 - **`layoutReady` is set but never read.** Either wire it up (for example, to disable saving while a layout loads) or remove it.
