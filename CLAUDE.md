@@ -120,9 +120,9 @@ Recent work, in order:
    - The BOM is still routed with every rack and bridge (no `user` passed), and the shared cache holds the full result. `_visible_bom_rows` then shows each user only the cables `Cable.objects.restrict(user, "view")` allows. Lengths are the same for everyone; only the list shrinks.
    - Checked read-only against every active user: superusers unchanged (site 105: 1,080 cables, Suite 15: 144); `cablecalc-e2e` with no permissions sees no sites; tenant-scoped users see only their own site.
 
-**Status:** `v=24` is deployed on the dev NetBox and `e2e/check.js` passes 20/20 with the stricter console check. `~/nbcc`, GitHub `origin/development` and the deploy checkout are in sync. Nothing is merged to `main` yet.
+**Status:** `v=24` plus the view permissions (`197cdcb`) are deployed on the dev NetBox, and `e2e/check.js` passes 21/21. `~/nbcc`, GitHub `origin/development` and the deploy checkout are in sync. Nothing is merged to `main` yet.
 
-**Before merging to `main`, decide on:** read permissions on the plugin's pages and GET APIs, and the browser Calculator vs. server BOM mismatch (both under Known issues).
+**Before merging to `main`, decide on:** the browser Calculator vs. server BOM mismatch (under Known issues).
 
 Data change made outside git: the live `site_105.json` was cleaned (4 empty leftover rows and 2 broken bridges removed).
 
