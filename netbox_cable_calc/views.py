@@ -7,7 +7,7 @@ from decimal import Decimal
 from django.shortcuts import render
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views import View
-from django.http import JsonResponse
+from django.http import JsonResponse, Http404
 from dcim.models import Rack, Device, Interface, Site, Location
 
 MM_TO_IN = 1 / 25.4
@@ -173,7 +173,7 @@ def _namespace_layout(scope, layout, bridges):
     return rows, rack_positions, ns_bridges
 
 
-def _load_scoped_layout(site_id, location_id):
+def _load_scoped_layout(site_id, location_id, user=None):
     """
     Rows/rackPositions are saved per location, but a site-wide BOM (and the
     site-wide floor plan view) needs all of them merged - plus the
@@ -187,6 +187,10 @@ def _load_scoped_layout(site_id, location_id):
     bridge apart from a genuine cross-location one. Row ids are namespaced
     per source file (see _namespace_layout) so same-named rows from
     different locations don't collide once merged.
+
+    With a user, only locations that user may view are merged in (for the
+    floor plan shown to them). Without one, every location is merged (for
+    routing, which must see the whole site).
 
     Returns (rows_list, rack_positions_dict, bridges_list).
     """
@@ -204,7 +208,8 @@ def _load_scoped_layout(site_id, location_id):
     for b in ns_bridges:
         bridges_by_id[b.get('id') or id(b)] = b
 
-    for loc in Location.objects.filter(site_id=site_id).order_by('name'):
+    locations = Location.objects.restrict(user, "view") if user else Location.objects.all()
+    for loc in locations.filter(site_id=site_id).order_by('name'):
         loc_layout, loc_bridges = _load_layout_file(site_id, loc.id)
         ns_rows, ns_positions, ns_bridges = _namespace_layout(f"loc{loc.id}", loc_layout, loc_bridges)
         for row in ns_rows:
@@ -284,9 +289,14 @@ def _bridge_path(graph, row_a, row_b, row_spacing=0.0, bridge_len=0.0):
     return None
 
 
-def _build_rack_index(cfg, site_id=None, location_id=None):
-    """Build rack index with layout data if available. Returns (index_dict, bridges_list)."""
-    qs = Rack.objects.select_related("site", "location").all()
+def _build_rack_index(cfg, site_id=None, location_id=None, user=None):
+    """
+    Build rack index with layout data if available. Returns (index_dict, bridges_list).
+    With a user, only racks (and floor plan locations) that user may view are
+    included. Leave user out when routing cables, which needs every rack.
+    """
+    racks = Rack.objects.restrict(user, "view") if user else Rack.objects.all()
+    qs = racks.select_related("site", "location")
     if site_id:
         qs = qs.filter(site_id=site_id)
     if location_id:
@@ -294,7 +304,7 @@ def _build_rack_index(cfg, site_id=None, location_id=None):
 
     rows, rack_positions, bridges = [], {}, []
     if site_id:
-        rows, rack_positions, bridges = _load_scoped_layout(site_id, location_id)
+        rows, rack_positions, bridges = _load_scoped_layout(site_id, location_id, user)
     row_index_by_id = {row_def.get('id'): idx for idx, row_def in enumerate(rows)}
 
     rack_list = []
@@ -349,12 +359,13 @@ def _build_rack_index(cfg, site_id=None, location_id=None):
     return {r["id"]: r for r in rack_list}, bridges
 
 
-def _build_rack_data(cfg, site_id=None, location_id=None):
-    rack_index, _ = _build_rack_index(cfg, site_id, location_id)
+def _build_rack_data(cfg, site_id=None, location_id=None, user=None):
+    rack_index, _ = _build_rack_index(cfg, site_id, location_id, user)
     return list(rack_index.values())
 
-def _build_device_data(cfg=None, site_id=None, location_id=None):
-    qs = (Device.objects
+def _build_device_data(cfg=None, site_id=None, location_id=None, user=None):
+    devices = Device.objects.restrict(user, "view") if user else Device.objects.all()
+    qs = (devices
           .select_related("rack", "rack__site", "rack__location", "device_type")
           .filter(rack__isnull=False)
           .order_by("rack__name", "position"))
@@ -382,11 +393,13 @@ def _build_device_data(cfg=None, site_id=None, location_id=None):
         })
     return result
 
-def _build_site_tree():
+def _build_site_tree(user):
+    """Sites and locations for the pickers, limited to what the user may view."""
     sites = []
-    for site in Site.objects.order_by("name"):
+    viewable_locations = Location.objects.restrict(user, "view")
+    for site in Site.objects.restrict(user, "view").order_by("name"):
         locations = list(
-            Location.objects.filter(site=site).order_by("name").values("id", "name", "level")
+            viewable_locations.filter(site=site).order_by("name").values("id", "name", "level")
         )
         for loc in locations:
             loc["label"] = ("— " * loc["level"]) + loc["name"]
@@ -720,6 +733,36 @@ def _layout_path(site_id, location_id=None):
 
 # ── views ─────────────────────────────────────────────────────────────────────
 
+def _scope_allowed(user, site_id, location_id=None):
+    """
+    The user may view the requested site, and the location (which must be in
+    that site). Treated like NetBox does: a scope they can't view is "not found".
+    """
+    if site_id and not Site.objects.restrict(user, "view").filter(pk=site_id).exists():
+        return False
+    if location_id:
+        locs = Location.objects.restrict(user, "view").filter(pk=location_id)
+        if site_id:
+            locs = locs.filter(site_id=site_id)
+        if not locs.exists():
+            return False
+    return True
+
+
+_SCOPE_NOT_FOUND = {"error": "Site or location not found"}
+
+
+def _visible_bom_rows(user, rows):
+    """
+    BOM lengths are routed with the whole site (and cached that way for every
+    user), but each user only sees the cables NetBox lets them view.
+    """
+    from dcim.models import Cable
+    ids = [r["cable_id"] for r in rows]
+    visible = set(Cable.objects.restrict(user, "view").filter(pk__in=ids).values_list("pk", flat=True))
+    return [r for r in rows if r["cable_id"] in visible]
+
+
 class CalculatorView(LoginRequiredMixin, View):
     template_name = "netbox_cable_calc/calculator.html"
 
@@ -727,17 +770,23 @@ class CalculatorView(LoginRequiredMixin, View):
         from django.conf import settings
         plugin_cfg = settings.PLUGINS_CONFIG.get("netbox_cable_calc", {})
         
+        try:
+            site_id     = int(request.GET.get("site_id") or 0) or None
+            location_id = int(request.GET.get("location_id") or 0) or None
+        except (ValueError, TypeError):
+            raise Http404("Invalid site_id or location_id")
+        if not _scope_allowed(request.user, site_id, location_id):
+            raise Http404("Site or location not found")
+
         # Handle recalculate request by deleting cache
-        site_id = request.GET.get("site_id")
-        location_id = request.GET.get("location_id")
         if request.GET.get("recalculate") == "true" and site_id:
             try:
-                cache_path = _bom_cache_path(int(site_id), int(location_id) if location_id else None)
+                cache_path = _bom_cache_path(site_id, location_id)
                 if os.path.exists(cache_path):
                     os.remove(cache_path)
             except Exception:
                 pass  # Ignore errors
-        
+
         cfg = {k: plugin_cfg.get(k) for k in [
             "outer_width_field", "outer_width_unit", "rack_spacing_default",
             "fiber_overhead", "fiber_bridge_length",
@@ -745,16 +794,13 @@ class CalculatorView(LoginRequiredMixin, View):
             "aisle_width", "rack_depth", "port_depth", "default_slack_pct",
             "front_exit_roles", "rear_exit_roles", "default_exit_face",
         ]}
-        site_id     = request.GET.get("site_id") or None
-        location_id = request.GET.get("location_id") or None
-        if site_id:     site_id     = int(site_id)
-        if location_id: location_id = int(location_id)
 
+        user = request.user
         return render(request, self.template_name, {
-            "rack_data_json":       _dumps(_build_rack_data(cfg, site_id, location_id)),
-            "device_data_json":     _dumps(_build_device_data(cfg, site_id, location_id)),
+            "rack_data_json":       _dumps(_build_rack_data(cfg, site_id, location_id, user)),
+            "device_data_json":     _dumps(_build_device_data(cfg, site_id, location_id, user)),
             "plugin_cfg_json":      _dumps(cfg),
-            "site_tree_json":       _dumps(_build_site_tree()),
+            "site_tree_json":       _dumps(_build_site_tree(user)),
             "selected_site_id":     site_id,
             "selected_location_id": location_id,
         })
@@ -787,8 +833,11 @@ class LayoutApiView(LoginRequiredMixin, View):
         except (ValueError, TypeError):
             return JsonResponse({"error": "Invalid site_id or location_id"}, status=400)
 
+        if not _scope_allowed(request.user, site_id, location_id):
+            return JsonResponse(_SCOPE_NOT_FOUND, status=404)
+
         try:
-            rows, rack_positions, bridges = _load_scoped_layout(site_id, location_id)
+            rows, rack_positions, bridges = _load_scoped_layout(site_id, location_id, request.user)
             return JsonResponse({"layout": {"rows": rows, "rackPositions": rack_positions}, "bridges": bridges})
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
@@ -835,10 +884,15 @@ class BomApiView(LoginRequiredMixin, View):
         site_id     = request.GET.get("site_id") or None
         location_id = request.GET.get("location_id") or None
         recalculate = request.GET.get("recalculate") == "true"
-        
-        if site_id:     site_id     = int(site_id)
-        if location_id: location_id = int(location_id)
-        
+
+        try:
+            if site_id:     site_id     = int(site_id)
+            if location_id: location_id = int(location_id)
+        except (ValueError, TypeError):
+            return JsonResponse({"error": "Invalid site_id or location_id"}, status=400)
+        if not _scope_allowed(request.user, site_id, location_id):
+            return JsonResponse(_SCOPE_NOT_FOUND, status=404)
+
         # Check cache unless recalculate requested
         if not recalculate and site_id:
             cache_path = _bom_cache_path(site_id, location_id)
@@ -846,9 +900,10 @@ class BomApiView(LoginRequiredMixin, View):
                 try:
                     with open(cache_path, 'r') as f:
                         cached = json.load(f)
+                    cables = _visible_bom_rows(request.user, cached.get("cables", []))
                     return JsonResponse({
-                        "cables": cached.get("cables", []),
-                        "count": cached.get("count", 0),
+                        "cables": cables,
+                        "count": len(cables),
                         "cached": True,
                         "cache_time": cached.get("timestamp")
                     })
@@ -873,7 +928,8 @@ class BomApiView(LoginRequiredMixin, View):
             except Exception as e:
                 pass  # Don't fail if cache write fails
         
-        return JsonResponse({"cables": rows, "count": len(rows), "cached": False})
+        cables = _visible_bom_rows(request.user, rows)
+        return JsonResponse({"cables": cables, "count": len(cables), "cached": False})
     def post(self, request):
         from dcim.models import Cable
         # Only cables the user may change in NetBox (object permissions,
@@ -912,13 +968,18 @@ class RacksApiView(LoginRequiredMixin, View):
         site_id = request.GET.get("site_id") or None
         location_id = request.GET.get("location_id") or None
 
-        if site_id:
-            site_id = int(site_id)
-        if location_id:
-            location_id = int(location_id)
+        try:
+            if site_id:
+                site_id = int(site_id)
+            if location_id:
+                location_id = int(location_id)
+        except (ValueError, TypeError):
+            return JsonResponse({"error": "Invalid site_id or location_id"}, status=400)
+        if not _scope_allowed(request.user, site_id, location_id):
+            return JsonResponse(_SCOPE_NOT_FOUND, status=404)
 
         try:
-            racks = _build_rack_data(cfg, site_id, location_id)
+            racks = _build_rack_data(cfg, site_id, location_id, request.user)
             return JsonResponse({"racks": racks})
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
@@ -935,13 +996,18 @@ class DevicesApiView(LoginRequiredMixin, View):
         site_id = request.GET.get("site_id") or None
         location_id = request.GET.get("location_id") or None
 
-        if site_id:
-            site_id = int(site_id)
-        if location_id:
-            location_id = int(location_id)
+        try:
+            if site_id:
+                site_id = int(site_id)
+            if location_id:
+                location_id = int(location_id)
+        except (ValueError, TypeError):
+            return JsonResponse({"error": "Invalid site_id or location_id"}, status=400)
+        if not _scope_allowed(request.user, site_id, location_id):
+            return JsonResponse(_SCOPE_NOT_FOUND, status=404)
 
         try:
-            devices = _build_device_data(cfg, site_id, location_id)
+            devices = _build_device_data(cfg, site_id, location_id, request.user)
             return JsonResponse({"devices": devices})
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)

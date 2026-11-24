@@ -53,13 +53,13 @@ sudo systemctl restart netbox netbox-rq
 
 ### Browser checks (`e2e/`)
 
-`e2e/check.js` drives the real page on the dev NetBox with headless Chromium (Playwright 1.56, which still supports the server's Node 18). It checks the bundle version, the site and location floor plans, scope switching, the Suite 15 BOM, the missing-bridge flag, CSRF and permissions, and that there are no errors. Screenshots go to `e2e/out/` (gitignored).
+`e2e/check.js` drives the real page on the dev NetBox with headless Chromium (Playwright 1.56, which still supports the server's Node 18). It checks the bundle version, the site and location floor plans, scope switching, the Suite 15 BOM, the missing-bridge flag, CSRF and permissions, that a site the user can't view returns 404, and that there are no errors. Screenshots go to `e2e/out/` (gitignored).
 
 ```bash
 cd e2e && npm install && node check.js <session-file>
 ```
 
-- It logs in as `cablecalc-e2e`, a NetBox user with no password and no permissions. The session file holds that user's `sessionid`; keep it outside the repo. To make a new one:
+- It logs in as `cablecalc-e2e`, a NetBox user with no password. It needs view-only permission on sites, locations, racks, devices and cables (and nothing else), so it can see site 105 but every save is refused. The session file holds that user's `sessionid`; keep it outside the repo. To make a new one:
   `cd /opt/netbox/netbox && sudo -u netbox /opt/netbox/venv/bin/python manage.py shell -c "from django.contrib.auth import get_user_model; from django.test import Client; c=Client(); c.force_login(get_user_model().objects.get(username='cablecalc-e2e')); print(c.cookies['sessionid'].value)" 2>/dev/null | tail -1 > <session-file>`
 - The only thing it changes is the BOM cache (it clicks "Calculate all cables"). Save checks post to a site with no racks and an empty length list, so they can't write even if the user gets permissions later.
 - Both dropdowns are TomSelect boxes; pick by label, not by position.
@@ -113,6 +113,13 @@ Recent work, in order:
 
 14. Debug logging removed (2026-11-24, bundle `v=24`): all `DEBUG:` and trace `console.error`/`console.log` calls are gone from App.jsx and floorplan.js. Only real error logs remain (failed rack/device or layout fetches). `e2e/check.js` now fails on any console error except the 3 deliberate 403s. (`9279d95`)
 
+15. View permissions (2026-11-24): the plugin now follows NetBox view permissions, including constrained ones (this NetBox scopes customer users by tenant, owner or location).
+   - Site/location pickers list only viewable sites and locations (`_build_site_tree(user)`).
+   - Racks, devices and the floor plan are limited to what the user can view (`user` argument on `_build_rack_index`, `_build_rack_data`, `_build_device_data`, `_load_scoped_layout`).
+   - A site or location the user can't view returns 404 on the page and every GET API (`_scope_allowed`), like NetBox does.
+   - The BOM is still routed with every rack and bridge (no `user` passed), and the shared cache holds the full result. `_visible_bom_rows` then shows each user only the cables `Cable.objects.restrict(user, "view")` allows. Lengths are the same for everyone; only the list shrinks.
+   - Checked read-only against every active user: superusers unchanged (site 105: 1,080 cables, Suite 15: 144); `cablecalc-e2e` with no permissions sees no sites; tenant-scoped users see only their own site.
+
 **Status:** `v=24` is deployed on the dev NetBox and `e2e/check.js` passes 20/20 with the stricter console check. `~/nbcc`, GitHub `origin/development` and the deploy checkout are in sync. Nothing is merged to `main` yet.
 
 **Before merging to `main`, decide on:** read permissions on the plugin's pages and GET APIs, and the browser Calculator vs. server BOM mismatch (both under Known issues).
@@ -124,7 +131,6 @@ Data change made outside git: the live `site_105.json` was cleaned (4 empty left
 - **Saves now need NetBox permissions.** Users who aren't superusers need "change rack" (floor plans) and "change cable" (lengths), or their saves are refused.
 - **Browser Calculator and server BOM disagree.** `shortestPath` in floorplan.js needs a bridge at every row boundary, or it drops to straight-line distance.
 - **The BOM cache doesn't notice NetBox changes.** Edits to racks, devices or cables don't clear it. Use Recalculate.
-- **Plugin pages and GET APIs ignore NetBox view permissions.** They query the ORM directly, so any logged-in user sees all sites, racks, devices and cables through the plugin. Use `.restrict(user, "view")` if that matters.
 - **Floor plan save errors are hidden.** `saveToServer` only returns true/false, so a permission error just shows as a failed save. `LayoutApiView` has no server-side logging.
 - **The TomSelect handler may be redundant.** It sets `pendingLocation` alongside `handleLocationChange` (`onChange`). React skips the second update when the value is the same, so it's harmless but probably not needed.
 - **`layoutReady` is set but never read.** Either wire it up (for example, to disable saving while a layout loads) or remove it.

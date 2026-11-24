@@ -2,6 +2,9 @@
 //
 // Usage: node check.js <session-cookie-file> [base-url]
 //
+// The test user needs NetBox view permission on sites, locations, racks,
+// devices and cables (and nothing else), or site 105 is "not found".
+//
 // Read-only except for "Calculate all cables", which refreshes the BOM
 // cache file. Never edits rows, drags racks or saves lengths to NetBox.
 const fs = require("fs");
@@ -152,6 +155,7 @@ const check = (name, ok, detail = "") => {
       layoutNoToken: await post("/plugins/cable-calc/layout/?site_id=999999999", { layout: {}, bridges: [] }, null),
       layoutWithToken: await post("/plugins/cable-calc/layout/?site_id=999999999", { layout: {}, bridges: [] }, token),
       lengthsWithToken: await post("/plugins/cable-calc/bom/", { lengths: {} }, token),
+      hiddenSite: (await fetch("/plugins/cable-calc/racks/?site_id=999999999")).status,
     };
   });
   check("page provides a CSRF token", saves.hasToken);
@@ -159,14 +163,18 @@ const check = (name, ok, detail = "") => {
   check("layout save with token reaches the permission check", saves.layoutWithToken.status === 403 && /permission/.test(saves.layoutWithToken.json?.error || ""), `HTTP ${saves.layoutWithToken.status} ${saves.layoutWithToken.json?.error || ""}`);
   check("length save without cable permission is refused", saves.lengthsWithToken.status === 403 && /permission/.test(saves.lengthsWithToken.json?.error || ""), `HTTP ${saves.lengthsWithToken.status} ${saves.lengthsWithToken.json?.error || ""}`);
 
+  check("a site the user can't view is not found", saves.hiddenSite === 404, `HTTP ${saves.hiddenSite}`);
+
   // 7. No errors along the way
   check("no page errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
-  // The browser logs each of the 3 deliberate 403 saves above as a console error.
-  const deliberate403 = consoleErrors.filter(t => /status of 403/.test(t)).length;
-  const otherConsole = consoleErrors.filter(t => !/status of 403/.test(t));
-  check("no console errors (besides the 3 deliberate 403s)", otherConsole.length === 0 && deliberate403 <= 3, [...otherConsole.slice(0, 3), deliberate403 > 3 ? `${deliberate403} 403s` : ""].filter(Boolean).join(" | "));
-  const unexpected = failedRequests.filter(r => !r.startsWith("403 ") || !/site_id=999999999|\/bom\/$/.test(r));
-  check("no failed plugin requests (besides the deliberate 403s)", unexpected.length === 0, unexpected.slice(0, 3).join(" | "));
+  // The browser logs the 3 deliberate 403 saves and the 1 deliberate 404 above as console errors.
+  const deliberate = t => /status of 40[34]/.test(t);
+  const n403 = consoleErrors.filter(t => /status of 403/.test(t)).length, n404 = consoleErrors.filter(t => /status of 404/.test(t)).length;
+  const otherConsole = consoleErrors.filter(t => !deliberate(t));
+  check("no console errors (besides the deliberate 403s and 404)", otherConsole.length === 0 && n403 <= 3 && n404 <= 1, [...otherConsole.slice(0, 3), n403 > 3 ? `${n403} 403s` : "", n404 > 1 ? `${n404} 404s` : ""].filter(Boolean).join(" | "));
+  const expectedFail = r => (r.startsWith("403 ") && /site_id=999999999|\/bom\/$/.test(r)) || (r.startsWith("404 ") && /racks\/\?site_id=999999999$/.test(r));
+  const unexpected = failedRequests.filter(r => !expectedFail(r));
+  check("no failed plugin requests (besides the deliberate 403s and 404)", unexpected.length === 0, unexpected.slice(0, 3).join(" | "));
 
   await browser.close();
   const failed = results.filter(r => !r.ok).length;
