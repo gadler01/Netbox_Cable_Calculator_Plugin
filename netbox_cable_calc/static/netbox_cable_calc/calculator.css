@@ -15,3 +15,9 @@ table .badge {
     font-weight: normal !important;
     font-size: inherit !important;
 }
+
+/* Exception: a missing bridge means the cable is too short, so flag it */
+table .badge.cc-flag-danger {
+    color: #d63939 !important;
+    font-weight: 600 !important;
+}

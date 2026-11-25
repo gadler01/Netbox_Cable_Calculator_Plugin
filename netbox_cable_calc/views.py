@@ -1,3 +1,5 @@
+import glob
+import math
 import os
 import re
 import json
@@ -6,9 +8,7 @@ from decimal import Decimal
 from django.shortcuts import render
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views import View
-from django.http import JsonResponse
-from django.utils.decorators import method_decorator
-from django.views.decorators.csrf import csrf_exempt
+from django.http import JsonResponse, Http404
 from dcim.models import Rack, Device, Interface, Site, Location
 
 MM_TO_IN = 1 / 25.4
@@ -89,9 +89,32 @@ MEDIA_STD = {
     "aoc":   [1, 2, 3, 5, 7, 10, 15, 20, 30],
 }
 
+# Fiber, DAC and AOC are sold in metres, copper in feet (same as MEDIA in
+# the browser Calculator).
+MEDIA_UNIT = {"om3": "m", "om4": "m", "os2": "m", "dac": "m", "aoc": "m"}
+FT_TO_M = 0.3048
+
+
 def _std_len(ft, media):
-    lengths = MEDIA_STD.get(media, [1, 2, 3, 5, 7, 10, 15, 20, 30])
-    return next((l for l in lengths if l >= ft), round(ft + 1))
+    """
+    Stock size for a cable of `ft` feet, in the media's own unit, using the
+    same rule as stdLen in the browser Calculator: the smallest listed size
+    that fits, else round up to the next whole unit.
+    Returns (stock, unit, stock_ft); stock_ft is the same length in feet.
+    """
+    lengths = MEDIA_STD.get(media, MEDIA_STD["cat6"])
+    unit = MEDIA_UNIT.get(media, "ft")
+    val = ft * FT_TO_M if unit == "m" else ft
+    stock = next((l for l in lengths if l >= val), None)
+    if stock is None:
+        stock = math.ceil(val)
+    stock_ft = round(stock / FT_TO_M, 2) if unit == "m" else stock
+    return stock, unit, stock_ft
+
+
+def _stock_fields(with_slack_ft, media):
+    stock, unit, stock_ft = _std_len(with_slack_ft, media)
+    return {"stock": stock, "unit": unit, "stock_ft": stock_ft}
 
 
 # ── rack helpers ──────────────────────────────────────────────────────────────
@@ -138,11 +161,61 @@ def _load_layout_file(site_id, location_id=None):
         return None, []
 
 
-def _load_scoped_layout(site_id, location_id):
+def _namespace_layout(scope, layout, bridges):
     """
-    Rows/rackPositions are saved per location, but a site-wide BOM needs all
-    of them merged (plus the site-level bridges that connect rows across
-    locations) so cross-location cables can be resolved.
+    Row ids (e.g. "row-?", the default bucket for racks whose name didn't
+    parse into a row) are only unique within the one file they were saved
+    in - every location, and the site-level file itself, can independently
+    produce a row literally called "row-?". Merging those as-is collides:
+    two different rows share one id, which drops one of them from a
+    React list keyed by row id, and silently corrupts the row-index lookup
+    _build_rack_index uses for cross-aisle distance.
+
+    Prefixes every row id - and everything that references one
+    (rackPositions[*].rowId, bridge rowIdA/rowIdB) - with a scope tag so
+    ids from different files can never collide once merged. Idempotent:
+    an id that already carries any scope prefix ("site:..." or
+    "loc126:...") is left alone. Raw row ids ("row-?", "row-<ts>") never
+    contain ":", and site-level bridges are saved with the namespaced id of
+    the location row they point at, so re-prefixing those with "site:"
+    would make them point at a row that doesn't exist.
+    """
+    def ns(row_id):
+        if row_id is None or ":" in str(row_id):
+            return row_id
+        return f"{scope}:{row_id}"
+
+    rows = [{**row, 'id': ns(row.get('id'))} for row in (layout or {}).get('rows', [])]
+    rack_positions = {
+        rack_id: {**pos, 'rowId': ns(pos.get('rowId'))}
+        for rack_id, pos in (layout or {}).get('rackPositions', {}).items()
+    }
+    ns_bridges = [
+        {**b, 'rowIdA': ns(b.get('rowIdA')), 'rowIdB': ns(b.get('rowIdB'))}
+        for b in (bridges or [])
+    ]
+    return rows, rack_positions, ns_bridges
+
+
+def _load_scoped_layout(site_id, location_id, user=None):
+    """
+    Rows/rackPositions are saved per location, but a site-wide BOM (and the
+    site-wide floor plan view) needs all of them merged - plus the
+    site-level bridges that connect rows across locations - so
+    cross-location cables can be resolved.
+
+    When merging (location_id is None), each row is tagged with the
+    locationId/locationName it came from (None/None for rows that live in
+    the site-level file itself) so a consumer can tell a same-location row
+    apart from another location's, and by extension tell a same-location
+    bridge apart from a genuine cross-location one. Row ids are namespaced
+    per source file (see _namespace_layout) so same-named rows from
+    different locations don't collide once merged.
+
+    With a user, only locations that user may view are merged in (for the
+    floor plan shown to them). Without one, every location is merged (for
+    routing, which must see the whole site).
+
     Returns (rows_list, rack_positions_dict, bridges_list).
     """
     if location_id:
@@ -152,58 +225,108 @@ def _load_scoped_layout(site_id, location_id):
     rows, rack_positions, bridges_by_id = [], {}, {}
 
     site_layout, site_bridges = _load_layout_file(site_id, None)
-    rows += (site_layout or {}).get('rows', [])
-    rack_positions.update((site_layout or {}).get('rackPositions', {}))
-    for b in site_bridges:
+    ns_rows, ns_positions, ns_bridges = _namespace_layout("site", site_layout, site_bridges)
+    for row in ns_rows:
+        rows.append({**row, 'locationId': None, 'locationName': None})
+    rack_positions.update(ns_positions)
+    for b in ns_bridges:
         bridges_by_id[b.get('id') or id(b)] = b
 
-    for loc_id in Location.objects.filter(site_id=site_id).values_list('id', flat=True):
-        loc_layout, loc_bridges = _load_layout_file(site_id, loc_id)
-        if loc_layout:
-            rows += loc_layout.get('rows', [])
-            rack_positions.update(loc_layout.get('rackPositions', {}))
-        for b in loc_bridges:
+    locations = Location.objects.restrict(user, "view") if user else Location.objects.all()
+    for loc in locations.filter(site_id=site_id).order_by('name'):
+        loc_layout, loc_bridges = _load_layout_file(site_id, loc.id)
+        ns_rows, ns_positions, ns_bridges = _namespace_layout(f"loc{loc.id}", loc_layout, loc_bridges)
+        for row in ns_rows:
+            rows.append({**row, 'locationId': loc.id, 'locationName': loc.name})
+        rack_positions.update(ns_positions)
+        for b in ns_bridges:
             bridges_by_id[b.get('id') or id(b)] = b
 
     return rows, rack_positions, list(bridges_by_id.values())
 
 
-def _build_bridge_graph(bridges):
+def _build_bridge_graph(bridges, rack_index=None):
+    """
+    Edges are (neighbor, length_in, x, rows_crossed). Real floorplan bridges
+    have rows_crossed=None. If rack_index is given, consecutive rows within
+    the same location are also linked by an estimated edge (x=None,
+    rows_crossed=row_index gap) unless a real bridge already joins them, so
+    a cable can cross a same-location aisle to reach a row that has a
+    floorplan bridge (e.g. S14 Row 2 -> Row 1 -> bridge -> S15 Row 1)
+    instead of skipping the bridge entirely.
+    """
     graph = {}
+    linked = set()
     for b in bridges:
         row_a, row_b = b.get('rowIdA'), b.get('rowIdB')
         if not row_a or not row_b:
             continue
-        length = float(b.get('lengthIn', 0) or 0)
+        # A bridge with no lengthIn uses the cable's configured bridge length
+        # (None here, resolved in _bridge_path/_calc_length).
+        raw_len = b.get('lengthIn')
+        length = None if raw_len in (None, "") else float(raw_len or 0)
         x = float(b.get('x', 0) or 0)
-        graph.setdefault(row_a, []).append((row_b, length, x))
-        graph.setdefault(row_b, []).append((row_a, length, x))
+        graph.setdefault(row_a, []).append((row_b, length, x, None))
+        graph.setdefault(row_b, []).append((row_a, length, x, None))
+        linked.add(frozenset((row_a, row_b)))
+
+    rows_by_loc = {}
+    for r in (rack_index or {}).values():
+        if r.get("resolved") and r.get("row") is not None:
+            rows_by_loc.setdefault(r.get("location_id"), {})[r["row"]] = r["row_index"]
+    for rows in rows_by_loc.values():
+        ordered = sorted(rows.items(), key=lambda kv: kv[1])
+        for (row_a, idx_a), (row_b, idx_b) in zip(ordered, ordered[1:]):
+            if frozenset((row_a, row_b)) in linked:
+                continue
+            gap = idx_b - idx_a
+            graph.setdefault(row_a, []).append((row_b, None, None, gap))
+            graph.setdefault(row_b, []).append((row_a, None, None, gap))
+    # Equal-length routes go to the lowest-x bridge, as before.
+    for edges in graph.values():
+        edges.sort(key=lambda e: (e[3] is not None, e[2] if e[2] is not None else 0.0))
     return graph
 
 
-def _bridge_path(graph, row_a, row_b):
-    """Dijkstra shortest path by lengthIn. Returns a list of (length, x) edges, or None."""
+def _bridge_path(graph, row_a, row_b, row_spacing=0.0, bridge_len=0.0):
+    """
+    Dijkstra shortest path. Real bridges weigh their lengthIn; estimated
+    same-location edges weigh rows_crossed * (row_spacing + bridge_len).
+    Returns a list of (length, x, rows_crossed) edges, or None.
+    """
     if row_a not in graph or row_b not in graph:
         return None
     import heapq
     seen = set()
-    heap = [(0.0, row_a, [])]
+    counter = 0  # tie-breaker so heapq never compares paths
+    heap = [(0.0, counter, row_a, [])]
     while heap:
-        dist, node, path = heapq.heappop(heap)
+        dist, _, node, path = heapq.heappop(heap)
         if node in seen:
             continue
         seen.add(node)
         if node == row_b:
             return path
-        for neighbor, length, x in graph.get(node, []):
-            if neighbor not in seen:
-                heapq.heappush(heap, (dist + length, neighbor, path + [(length, x)]))
+        for neighbor, length, x, crossed in graph.get(node, []):
+            if neighbor in seen:
+                continue
+            if crossed is None:
+                weight = length if length is not None else bridge_len
+            else:
+                weight = crossed * (row_spacing + bridge_len)
+            counter += 1
+            heapq.heappush(heap, (dist + weight, counter, neighbor, path + [(length, x, crossed)]))
     return None
 
 
-def _build_rack_index(cfg, site_id=None, location_id=None):
-    """Build rack index with layout data if available. Returns (index_dict, bridges_list)."""
-    qs = Rack.objects.select_related("site", "location").all()
+def _build_rack_index(cfg, site_id=None, location_id=None, user=None):
+    """
+    Build rack index with layout data if available. Returns (index_dict, bridges_list).
+    With a user, only racks (and floor plan locations) that user may view are
+    included. Leave user out when routing cables, which needs every rack.
+    """
+    racks = Rack.objects.restrict(user, "view") if user else Rack.objects.all()
+    qs = racks.select_related("site", "location")
     if site_id:
         qs = qs.filter(site_id=site_id)
     if location_id:
@@ -211,7 +334,7 @@ def _build_rack_index(cfg, site_id=None, location_id=None):
 
     rows, rack_positions, bridges = [], {}, []
     if site_id:
-        rows, rack_positions, bridges = _load_scoped_layout(site_id, location_id)
+        rows, rack_positions, bridges = _load_scoped_layout(site_id, location_id, user)
     row_index_by_id = {row_def.get('id'): idx for idx, row_def in enumerate(rows)}
 
     rack_list = []
@@ -266,12 +389,13 @@ def _build_rack_index(cfg, site_id=None, location_id=None):
     return {r["id"]: r for r in rack_list}, bridges
 
 
-def _build_rack_data(cfg, site_id=None, location_id=None):
-    rack_index, _ = _build_rack_index(cfg, site_id, location_id)
+def _build_rack_data(cfg, site_id=None, location_id=None, user=None):
+    rack_index, _ = _build_rack_index(cfg, site_id, location_id, user)
     return list(rack_index.values())
 
-def _build_device_data(cfg=None, site_id=None, location_id=None):
-    qs = (Device.objects
+def _build_device_data(cfg=None, site_id=None, location_id=None, user=None):
+    devices = Device.objects.restrict(user, "view") if user else Device.objects.all()
+    qs = (devices
           .select_related("rack", "rack__site", "rack__location", "device_type")
           .filter(rack__isnull=False)
           .order_by("rack__name", "position"))
@@ -299,11 +423,13 @@ def _build_device_data(cfg=None, site_id=None, location_id=None):
         })
     return result
 
-def _build_site_tree():
+def _build_site_tree(user):
+    """Sites and locations for the pickers, limited to what the user may view."""
     sites = []
-    for site in Site.objects.order_by("name"):
+    viewable_locations = Location.objects.restrict(user, "view")
+    for site in Site.objects.restrict(user, "view").order_by("name"):
         locations = list(
-            Location.objects.filter(site=site).order_by("name").values("id", "name", "level")
+            viewable_locations.filter(site=site).order_by("name").values("id", "name", "level")
         )
         for loc in locations:
             loc["label"] = ("— " * loc["level"]) + loc["name"]
@@ -313,7 +439,7 @@ def _build_site_tree():
 
 # ── cable length calculator ───────────────────────────────────────────────────
 
-def _calc_length(src, dst, rack_index, cfg, bridge_graph=None):
+def _calc_length(src, dst, rack_index, cfg, bridge_graphs=None):
     row_spacing = float(cfg.get("aisle_width", 60))
     rack_depth  = float(cfg.get("rack_depth", 48))
     port_depth  = float(cfg.get("port_depth", 4))
@@ -370,37 +496,46 @@ def _calc_length(src, dst, rack_index, cfg, bridge_graph=None):
         with_slack = raw_ft * (1 + eff_slack / 100)
         return {
             "raw_ft": round(raw_ft, 2), "with_slack": round(with_slack, 2),
-            "stock_ft": _std_len(with_slack, media),
+            **_stock_fields(with_slack, media),
             "media": media, "connector": connector,
             "cross_aisle": False, "fixed": slack_mult == 0,
-            "same_rack": True,
+            "same_rack": True, "missing_bridge": False,
             "breakdown": {"in_rack_vertical": round(vert, 2), "port_depth": round(depth_component, 2)},
         }
 
     # Different racks — route via overhead tray
-    if src["face"] == "front":
-        src_pe = port_depth;  src_v = ru_from_top(src["ru"], src_rack_u) + overhead
-    else:
-        src_pe = port_depth;  src_v = (float(src["ru"]) - 1) * U_HEIGHT + src_rack_u * U_HEIGHT + overhead
-
-    if dst["face"] == "front":
-        dst_pe = port_depth;  dst_v = ru_from_top(dst["ru"], dst_rack_u) + overhead
-    else:
-        dst_pe = port_depth;  dst_v = dst_rack_u * U_HEIGHT + (float(dst["ru"]) - 1) * U_HEIGHT + overhead
+    # Front and rear exits both run straight up from the device to the top
+    # of the rack, then up to the overhead tray.
+    src_pe = port_depth;  src_v = ru_from_top(src["ru"], src_rack_u) + overhead
+    dst_pe = port_depth;  dst_v = ru_from_top(dst["ru"], dst_rack_u) + overhead
 
     cross_aisle = src_rack.get("row") != dst_rack.get("row")
-    path = _bridge_path(bridge_graph, src_rack.get("row"), dst_rack.get("row")) \
+    # Fiber cables only use fiber bridges and copper only copper (bridges
+    # with no pathType carry both). routeCable in ui/src/floorplan.js is a
+    # port of this routing; keep the two in step (e2e/check.js compares them).
+    bridge_graph = (bridge_graphs or {}).get("fiber" if is_fiber else "copper")
+    path = _bridge_path(bridge_graph, src_rack.get("row"), dst_rack.get("row"), row_spacing, bridge_len) \
         if (cross_aisle and bridge_graph) else None
 
     if path:
-        # Use the floorplan's actual measured bridge run(s): rack -> bridge
-        # point -> ... -> bridge point -> rack, instead of a generic estimate.
-        first_x, last_x = path[0][1], path[-1][1]
-        horiz = (abs(first_x - float(src_rack.get("center_offset", 0))) +
-                 abs(last_x - float(dst_rack.get("center_offset", 0))))
-        bridge_total = sum(length for length, _x in path)
-        row_travel = 0
-        bridge_source = "floorplan"
+        # Walk the path: real bridges move the cable to the bridge's x and
+        # add its measured lengthIn; estimated same-location crossings go
+        # straight across at the current x.
+        cur_x = float(src_rack.get("center_offset", 0))
+        horiz = row_travel = bridge_total = 0.0
+        real = estimated = False
+        for length, x, crossed in path:
+            if crossed is None:
+                horiz += abs(x - cur_x)
+                cur_x = x
+                bridge_total += length if length is not None else bridge_len
+                real = True
+            else:
+                row_travel += crossed * row_spacing
+                bridge_total += crossed * bridge_len
+                estimated = True
+        horiz += abs(float(dst_rack.get("center_offset", 0)) - cur_x)
+        bridge_source = ("floorplan+estimated" if estimated else "floorplan") if real else "estimated"
     else:
         horiz = abs(float(dst_rack.get("center_offset", 0)) - float(src_rack.get("center_offset", 0)))
         rows_crossed = abs(src_rack.get("row_index", 0) - dst_rack.get("row_index", 0))
@@ -427,12 +562,15 @@ def _calc_length(src, dst, rack_index, cfg, bridge_graph=None):
 
     eff_slack  = 0 if slack_mult == 0 else slack_pct * slack_mult
     with_slack = raw_ft * (1 + eff_slack / 100)
-    stock      = _std_len(with_slack, media)
 
     return {
-        "raw_ft": round(raw_ft, 2), "with_slack": round(with_slack, 2), "stock_ft": stock,
+        "raw_ft": round(raw_ft, 2), "with_slack": round(with_slack, 2), **_stock_fields(with_slack, media),
         "media": media, "connector": connector, "cross_aisle": cross_aisle,
         "fixed": slack_mult == 0, "same_rack": False,
+        # Crosses rows but no floorplan route (bridges of this cable's type,
+        # or same-location aisles) connects them, so the length is a rough
+        # estimate that leaves out any real bridge run.
+        "missing_bridge": bool(cross_aisle and not path),
         "breakdown": {
             "src_vertical": round(src_v, 2), "dst_vertical": round(dst_v, 2),
             "horizontal": round(horiz, 2), "row_travel": round(row_travel, 2),
@@ -483,8 +621,14 @@ def _endpoint_info_from_obj(obj, cfg=None):
 
 def _build_cable_bom(cfg, site_id=None, location_id=None):
     from dcim.models import CableTermination
-    rack_index, bridges = _build_rack_index(cfg, site_id, location_id)
-    bridge_graph = _build_bridge_graph(bridges)
+    # Route with the whole site's floor plan even for a single location, so
+    # a cable to another location still sees that location's racks and the
+    # site-level bridges. location_id only narrows which cables are listed.
+    rack_index, bridges = _build_rack_index(cfg, site_id, None if site_id else location_id)
+    bridge_graphs = {
+        kind: _build_bridge_graph([b for b in bridges if not b.get("pathType") or b.get("pathType") == kind], rack_index)
+        for kind in ("fiber", "copper")
+    }
 
     from django.db.models import Q
     dev_qs = Device.objects.filter(rack__isnull=False)
@@ -564,13 +708,13 @@ def _build_cable_bom(cfg, site_id=None, location_id=None):
             continue
         try:
             src_with_cable = {**src_info, "cable_type": cable.type or ""}
-            result = _calc_length(src_with_cable, dst_info, rack_index, cfg, bridge_graph)
+            result = _calc_length(src_with_cable, dst_info, rack_index, cfg, bridge_graphs)
         except Exception as e:
             result = {
-                "raw_ft": 0, "with_slack": 0, "stock_ft": 0,
+                "raw_ft": 0, "with_slack": 0, "stock": 0, "unit": "ft", "stock_ft": 0,
                 "media": "unknown", "connector": "unknown",
                 "cross_aisle": False, "fixed": False, "same_rack": False,
-                "error": str(e), "breakdown": {},
+                "missing_bridge": False, "error": str(e), "breakdown": {},
             }
         rows.append({
             "cable_id": cable.pk, "cable_label": cable.label or f"Cable {cable.pk}",
@@ -596,6 +740,19 @@ def _bom_cache_path(site_id, location_id=None):
         key += f"_loc_{location_id}"
     return os.path.join(LAYOUT_DIR, f"{key}_bom_cache.json")
 
+def _clear_bom_cache(site_id):
+    """
+    Delete every cached BOM for a site. A location's floorplan feeds the
+    site-wide BOM, and the site file's bridges feed cross-location routing,
+    so any layout save for the site can change any of its cached BOMs.
+    """
+    for path in glob.glob(os.path.join(LAYOUT_DIR, f"site_{site_id}_bom_cache.json")) + \
+                glob.glob(os.path.join(LAYOUT_DIR, f"site_{site_id}_loc_*_bom_cache.json")):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
 def _layout_path(site_id, location_id=None):
     os.makedirs(LAYOUT_DIR, exist_ok=True)
     key = f"site_{site_id}"
@@ -606,6 +763,36 @@ def _layout_path(site_id, location_id=None):
 
 # ── views ─────────────────────────────────────────────────────────────────────
 
+def _scope_allowed(user, site_id, location_id=None):
+    """
+    The user may view the requested site, and the location (which must be in
+    that site). Treated like NetBox does: a scope they can't view is "not found".
+    """
+    if site_id and not Site.objects.restrict(user, "view").filter(pk=site_id).exists():
+        return False
+    if location_id:
+        locs = Location.objects.restrict(user, "view").filter(pk=location_id)
+        if site_id:
+            locs = locs.filter(site_id=site_id)
+        if not locs.exists():
+            return False
+    return True
+
+
+_SCOPE_NOT_FOUND = {"error": "Site or location not found"}
+
+
+def _visible_bom_rows(user, rows):
+    """
+    BOM lengths are routed with the whole site (and cached that way for every
+    user), but each user only sees the cables NetBox lets them view.
+    """
+    from dcim.models import Cable
+    ids = [r["cable_id"] for r in rows]
+    visible = set(Cable.objects.restrict(user, "view").filter(pk__in=ids).values_list("pk", flat=True))
+    return [r for r in rows if r["cable_id"] in visible]
+
+
 class CalculatorView(LoginRequiredMixin, View):
     template_name = "netbox_cable_calc/calculator.html"
 
@@ -613,17 +800,23 @@ class CalculatorView(LoginRequiredMixin, View):
         from django.conf import settings
         plugin_cfg = settings.PLUGINS_CONFIG.get("netbox_cable_calc", {})
         
+        try:
+            site_id     = int(request.GET.get("site_id") or 0) or None
+            location_id = int(request.GET.get("location_id") or 0) or None
+        except (ValueError, TypeError):
+            raise Http404("Invalid site_id or location_id")
+        if not _scope_allowed(request.user, site_id, location_id):
+            raise Http404("Site or location not found")
+
         # Handle recalculate request by deleting cache
-        site_id = request.GET.get("site_id")
-        location_id = request.GET.get("location_id")
         if request.GET.get("recalculate") == "true" and site_id:
             try:
-                cache_path = _bom_cache_path(int(site_id), int(location_id) if location_id else None)
+                cache_path = _bom_cache_path(site_id, location_id)
                 if os.path.exists(cache_path):
                     os.remove(cache_path)
             except Exception:
                 pass  # Ignore errors
-        
+
         cfg = {k: plugin_cfg.get(k) for k in [
             "outer_width_field", "outer_width_unit", "rack_spacing_default",
             "fiber_overhead", "fiber_bridge_length",
@@ -631,26 +824,32 @@ class CalculatorView(LoginRequiredMixin, View):
             "aisle_width", "rack_depth", "port_depth", "default_slack_pct",
             "front_exit_roles", "rear_exit_roles", "default_exit_face",
         ]}
-        site_id     = request.GET.get("site_id") or None
-        location_id = request.GET.get("location_id") or None
-        if site_id:     site_id     = int(site_id)
-        if location_id: location_id = int(location_id)
 
+        user = request.user
         return render(request, self.template_name, {
-            "rack_data_json":       _dumps(_build_rack_data(cfg, site_id, location_id)),
-            "device_data_json":     _dumps(_build_device_data(cfg, site_id, location_id)),
+            "rack_data_json":       _dumps(_build_rack_data(cfg, site_id, location_id, user)),
+            "device_data_json":     _dumps(_build_device_data(cfg, site_id, location_id, user)),
             "plugin_cfg_json":      _dumps(cfg),
-            "site_tree_json":       _dumps(_build_site_tree()),
+            "site_tree_json":       _dumps(_build_site_tree(user)),
             "selected_site_id":     site_id,
             "selected_location_id": location_id,
         })
 
 
-class LayoutApiView(LoginRequiredMixin, View):
-    @method_decorator(csrf_exempt)
-    def dispatch(self, *args, **kwargs):
-        return super().dispatch(*args, **kwargs)
+def _can_edit_layout(user, site_id, location_id=None):
+    """
+    A floorplan positions racks, so saving one needs NetBox's own "change
+    rack" permission on at least one rack in that site (and location, if
+    given). Uses the user's object permissions, so constrained permissions
+    (e.g. only some sites) are honored.
+    """
+    qs = Rack.objects.restrict(user, "change").filter(site_id=site_id)
+    if location_id:
+        qs = qs.filter(location_id=location_id)
+    return qs.exists()
 
+
+class LayoutApiView(LoginRequiredMixin, View):
     def get(self, request):
         site_id     = request.GET.get("site_id")
         location_id = request.GET.get("location_id")
@@ -663,14 +862,13 @@ class LayoutApiView(LoginRequiredMixin, View):
             location_id = int(location_id) if location_id else None
         except (ValueError, TypeError):
             return JsonResponse({"error": "Invalid site_id or location_id"}, status=400)
-        
-        path = _layout_path(site_id, location_id)
-        if not os.path.exists(path):
-            return JsonResponse({"layout": None, "bridges": []})
+
+        if not _scope_allowed(request.user, site_id, location_id):
+            return JsonResponse(_SCOPE_NOT_FOUND, status=404)
+
         try:
-            with open(path, "r") as f:
-                data = json.load(f)
-            return JsonResponse(data)
+            rows, rack_positions, bridges = _load_scoped_layout(site_id, location_id, request.user)
+            return JsonResponse({"layout": {"rows": rows, "rackPositions": rack_positions}, "bridges": bridges})
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
 
@@ -684,20 +882,24 @@ class LayoutApiView(LoginRequiredMixin, View):
         try:
             site_id = int(site_id)
             location_id = int(location_id) if location_id else None
+        except (ValueError, TypeError):
+            return JsonResponse({"error": "Invalid site_id or location_id"}, status=400)
+
+        if not _can_edit_layout(request.user, site_id, location_id):
+            return JsonResponse({"error": "You need permission to change racks in this site/location to save its floor plan."}, status=403)
+
+        try:
             body = json.loads(request.body)
             path = _layout_path(site_id, location_id)
             with open(path, "w") as f:
                 json.dump({"layout": body.get("layout", {}), "bridges": body.get("bridges", [])}, f, indent=2)
+            _clear_bom_cache(site_id)
             return JsonResponse({"saved": True})
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
 
 
 class BomApiView(LoginRequiredMixin, View):
-    @method_decorator(csrf_exempt)
-    def dispatch(self, *args, **kwargs):
-        return super().dispatch(*args, **kwargs)
-
     def get(self, request):
         from django.conf import settings
         plugin_cfg = settings.PLUGINS_CONFIG.get("netbox_cable_calc", {})
@@ -712,10 +914,15 @@ class BomApiView(LoginRequiredMixin, View):
         site_id     = request.GET.get("site_id") or None
         location_id = request.GET.get("location_id") or None
         recalculate = request.GET.get("recalculate") == "true"
-        
-        if site_id:     site_id     = int(site_id)
-        if location_id: location_id = int(location_id)
-        
+
+        try:
+            if site_id:     site_id     = int(site_id)
+            if location_id: location_id = int(location_id)
+        except (ValueError, TypeError):
+            return JsonResponse({"error": "Invalid site_id or location_id"}, status=400)
+        if not _scope_allowed(request.user, site_id, location_id):
+            return JsonResponse(_SCOPE_NOT_FOUND, status=404)
+
         # Check cache unless recalculate requested
         if not recalculate and site_id:
             cache_path = _bom_cache_path(site_id, location_id)
@@ -723,9 +930,10 @@ class BomApiView(LoginRequiredMixin, View):
                 try:
                     with open(cache_path, 'r') as f:
                         cached = json.load(f)
+                    cables = _visible_bom_rows(request.user, cached.get("cables", []))
                     return JsonResponse({
-                        "cables": cached.get("cables", []),
-                        "count": cached.get("count", 0),
+                        "cables": cables,
+                        "count": len(cables),
                         "cached": True,
                         "cache_time": cached.get("timestamp")
                     })
@@ -750,24 +958,93 @@ class BomApiView(LoginRequiredMixin, View):
             except Exception as e:
                 pass  # Don't fail if cache write fails
         
-        return JsonResponse({"cables": rows, "count": len(rows), "cached": False})
+        cables = _visible_bom_rows(request.user, rows)
+        return JsonResponse({"cables": cables, "count": len(cables), "cached": False})
     def post(self, request):
         from dcim.models import Cable
+        # Only cables the user may change in NetBox (object permissions,
+        # including any constraints) can have their length saved.
+        if not request.user.has_perm("dcim.change_cable"):
+            return JsonResponse({"error": "You need permission to change cables to save lengths to NetBox."}, status=403)
+        allowed = Cable.objects.restrict(request.user, "change")
         try:
             body    = json.loads(request.body)
             updates = body.get("lengths", {})
             updated = 0; errors = []
-            for cable_id_str, length_ft in updates.items():
+            for cable_id_str, value in updates.items():
                 try:
-                    cable = Cable.objects.get(pk=int(cable_id_str))
-                    cable.length = float(length_ft)
-                    cable.length_unit = "ft"
+                    # {"length": n, "unit": "ft" or "m"}, or a plain number of feet
+                    if isinstance(value, dict):
+                        length, unit = float(value.get("length")), value.get("unit", "ft")
+                    else:
+                        length, unit = float(value), "ft"
+                    if unit not in ("ft", "m"):
+                        raise ValueError(f"unsupported unit {unit!r}")
+                    cable = allowed.get(pk=int(cable_id_str))
+                    cable.length = length
+                    cable.length_unit = unit
                     cable.save()
                     updated += 1
                 except Cable.DoesNotExist:
-                    errors.append(f"Cable {cable_id_str} not found")
+                    errors.append(f"Cable {cable_id_str} not found or not permitted")
                 except Exception as e:
                     errors.append(f"Cable {cable_id_str}: {e}")
             return JsonResponse({"updated": updated, "errors": errors})
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=400)
+
+
+class RacksApiView(LoginRequiredMixin, View):
+    def get(self, request):
+        from django.conf import settings
+        plugin_cfg = settings.PLUGINS_CONFIG.get("netbox_cable_calc", {})
+        cfg = {k: plugin_cfg.get(k) for k in [
+            "outer_width_field", "outer_width_unit", "rack_spacing_default",
+        ]}
+
+        site_id = request.GET.get("site_id") or None
+        location_id = request.GET.get("location_id") or None
+
+        try:
+            if site_id:
+                site_id = int(site_id)
+            if location_id:
+                location_id = int(location_id)
+        except (ValueError, TypeError):
+            return JsonResponse({"error": "Invalid site_id or location_id"}, status=400)
+        if not _scope_allowed(request.user, site_id, location_id):
+            return JsonResponse(_SCOPE_NOT_FOUND, status=404)
+
+        try:
+            racks = _build_rack_data(cfg, site_id, location_id, request.user)
+            return JsonResponse({"racks": racks})
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+
+class DevicesApiView(LoginRequiredMixin, View):
+    def get(self, request):
+        from django.conf import settings
+        plugin_cfg = settings.PLUGINS_CONFIG.get("netbox_cable_calc", {})
+        cfg = {k: plugin_cfg.get(k) for k in [
+            "front_exit_roles", "rear_exit_roles", "default_exit_face",
+        ]}
+
+        site_id = request.GET.get("site_id") or None
+        location_id = request.GET.get("location_id") or None
+
+        try:
+            if site_id:
+                site_id = int(site_id)
+            if location_id:
+                location_id = int(location_id)
+        except (ValueError, TypeError):
+            return JsonResponse({"error": "Invalid site_id or location_id"}, status=400)
+        if not _scope_allowed(request.user, site_id, location_id):
+            return JsonResponse(_SCOPE_NOT_FOUND, status=404)
+
+        try:
+            devices = _build_device_data(cfg, site_id, location_id, request.user)
+            return JsonResponse({"devices": devices})
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
