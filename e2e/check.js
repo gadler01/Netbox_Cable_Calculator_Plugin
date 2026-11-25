@@ -102,18 +102,29 @@ const check = (name, ok, detail = "") => {
     const tables = [...document.querySelectorAll("#cable-calc-root table")];
     const detail = tables[tables.length - 1];
     const trs = detail ? [...detail.querySelectorAll("tbody tr")] : [];
-    const stock = trs.map(tr => parseFloat(tr.children[10]?.textContent)).filter(n => !isNaN(n));
+    const heads = detail ? [...detail.querySelectorAll("thead th")].map(th => th.textContent.replace(/[↑↓]/g, "").trim()) : [];
+    const col = name => heads.indexOf(name);
+    const calc = trs.map(tr => parseFloat(tr.children[col("Calc")]?.textContent)).filter(n => !isNaN(n));
+    // Fiber, DAC and AOC stock is in metres, copper in feet.
+    const metric = new Set(["om3", "om4", "os2", "dac", "aoc"]);
+    const wrongUnit = trs.filter(tr => {
+      const media = tr.children[col("Media")]?.textContent.trim().toLowerCase();
+      const unit = (tr.children[col("Stock")]?.textContent.trim().match(/\s(ft|m)$/) || [])[1];
+      return unit !== (metric.has(media) ? "m" : "ft");
+    }).length;
     return {
       rows: trs.length,
       noBridge: document.querySelectorAll("#cable-calc-root span[title^='No floor plan bridge']").length,
       warning: !!document.querySelector("#cable-calc-root .alert-warning"),
       summary: document.querySelector("#cable-calc-root .card-header")?.textContent.trim(),
-      minStock: Math.min(...stock), maxStock: Math.max(...stock),
+      minCalc: Math.min(...calc), maxCalc: Math.max(...calc), wrongUnit,
+      units: [...new Set(trs.map(tr => (tr.children[col("Stock")]?.textContent.trim().match(/\s(ft|m)$/) || [])[1]))].join("/"),
     };
   });
   check("Suite 15 BOM lists 144 cables", bom.rows === 144, `${bom.rows} rows; ${bom.summary}`);
   check("Suite 15 BOM has no missing-bridge flags", bom.rows > 0 && bom.noBridge === 0 && !bom.warning, `${bom.noBridge} badges, warning=${bom.warning}`);
-  check("Suite 15 BOM lengths use the bridge (80-95 ft)", bom.rows > 0 && bom.minStock >= 80 && bom.maxStock <= 95, `${bom.minStock}-${bom.maxStock} ft`);
+  check("Suite 15 BOM lengths use the bridge (calc 75-95 ft)", bom.rows > 0 && bom.minCalc >= 75 && bom.maxCalc <= 95, `${bom.minCalc}-${bom.maxCalc} ft`);
+  check("Suite 15 BOM stock is in metres for fiber/DAC/AOC, feet for copper", bom.rows > 0 && bom.wrongUnit === 0, `${bom.wrongUnit} wrong; units ${bom.units}`);
   await shot("4-suite15-bom", false);
 
   // 5. Missing-bridge warning and badges render. Nothing is flagged in live

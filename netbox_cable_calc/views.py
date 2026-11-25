@@ -1,4 +1,5 @@
 import glob
+import math
 import os
 import re
 import json
@@ -88,9 +89,32 @@ MEDIA_STD = {
     "aoc":   [1, 2, 3, 5, 7, 10, 15, 20, 30],
 }
 
+# Fiber, DAC and AOC are sold in metres, copper in feet (same as MEDIA in
+# the browser Calculator).
+MEDIA_UNIT = {"om3": "m", "om4": "m", "os2": "m", "dac": "m", "aoc": "m"}
+FT_TO_M = 0.3048
+
+
 def _std_len(ft, media):
-    lengths = MEDIA_STD.get(media, [1, 2, 3, 5, 7, 10, 15, 20, 30])
-    return next((l for l in lengths if l >= ft), round(ft + 1))
+    """
+    Stock size for a cable of `ft` feet, in the media's own unit, using the
+    same rule as stdLen in the browser Calculator: the smallest listed size
+    that fits, else round up to the next whole unit.
+    Returns (stock, unit, stock_ft); stock_ft is the same length in feet.
+    """
+    lengths = MEDIA_STD.get(media, MEDIA_STD["cat6"])
+    unit = MEDIA_UNIT.get(media, "ft")
+    val = ft * FT_TO_M if unit == "m" else ft
+    stock = next((l for l in lengths if l >= val), None)
+    if stock is None:
+        stock = math.ceil(val)
+    stock_ft = round(stock / FT_TO_M, 2) if unit == "m" else stock
+    return stock, unit, stock_ft
+
+
+def _stock_fields(with_slack_ft, media):
+    stock, unit, stock_ft = _std_len(with_slack_ft, media)
+    return {"stock": stock, "unit": unit, "stock_ft": stock_ft}
 
 
 # ── rack helpers ──────────────────────────────────────────────────────────────
@@ -472,7 +496,7 @@ def _calc_length(src, dst, rack_index, cfg, bridge_graphs=None):
         with_slack = raw_ft * (1 + eff_slack / 100)
         return {
             "raw_ft": round(raw_ft, 2), "with_slack": round(with_slack, 2),
-            "stock_ft": _std_len(with_slack, media),
+            **_stock_fields(with_slack, media),
             "media": media, "connector": connector,
             "cross_aisle": False, "fixed": slack_mult == 0,
             "same_rack": True, "missing_bridge": False,
@@ -538,10 +562,9 @@ def _calc_length(src, dst, rack_index, cfg, bridge_graphs=None):
 
     eff_slack  = 0 if slack_mult == 0 else slack_pct * slack_mult
     with_slack = raw_ft * (1 + eff_slack / 100)
-    stock      = _std_len(with_slack, media)
 
     return {
-        "raw_ft": round(raw_ft, 2), "with_slack": round(with_slack, 2), "stock_ft": stock,
+        "raw_ft": round(raw_ft, 2), "with_slack": round(with_slack, 2), **_stock_fields(with_slack, media),
         "media": media, "connector": connector, "cross_aisle": cross_aisle,
         "fixed": slack_mult == 0, "same_rack": False,
         # Crosses rows but no floorplan route (bridges of this cable's type,
@@ -688,7 +711,7 @@ def _build_cable_bom(cfg, site_id=None, location_id=None):
             result = _calc_length(src_with_cable, dst_info, rack_index, cfg, bridge_graphs)
         except Exception as e:
             result = {
-                "raw_ft": 0, "with_slack": 0, "stock_ft": 0,
+                "raw_ft": 0, "with_slack": 0, "stock": 0, "unit": "ft", "stock_ft": 0,
                 "media": "unknown", "connector": "unknown",
                 "cross_aisle": False, "fixed": False, "same_rack": False,
                 "missing_bridge": False, "error": str(e), "breakdown": {},
@@ -948,11 +971,18 @@ class BomApiView(LoginRequiredMixin, View):
             body    = json.loads(request.body)
             updates = body.get("lengths", {})
             updated = 0; errors = []
-            for cable_id_str, length_ft in updates.items():
+            for cable_id_str, value in updates.items():
                 try:
+                    # {"length": n, "unit": "ft" or "m"}, or a plain number of feet
+                    if isinstance(value, dict):
+                        length, unit = float(value.get("length")), value.get("unit", "ft")
+                    else:
+                        length, unit = float(value), "ft"
+                    if unit not in ("ft", "m"):
+                        raise ValueError(f"unsupported unit {unit!r}")
                     cable = allowed.get(pk=int(cable_id_str))
-                    cable.length = float(length_ft)
-                    cable.length_unit = "ft"
+                    cable.length = length
+                    cable.length_unit = unit
                     cable.save()
                     updated += 1
                 except Cable.DoesNotExist:

@@ -71,6 +71,11 @@ const bomColor = (ft,mk) => {
   return r>m.stdLengths[m.stdLengths.length-1]?"danger":m.color;
 };
 
+// BOM rows carry stock in the media's own unit (ft or m); older cached rows only have stock_ft.
+const stockOf   = c => c.stock ?? c.stock_ft;
+const unitOf    = c => c.unit ?? "ft";
+const stockText = c => `${stockOf(c)} ${unitOf(c)}`;
+
 function calcSegment(src,dst,infra,ifaceKey,layout,bridges,racks) {
   const {rackDepth,portDepth,slack} = infra;
   const iface  = IFACE_TYPES[ifaceKey]??IFACE_TYPES["1000base-t"];
@@ -137,7 +142,7 @@ function exportManualCSV(hops,results) {
 }
 function exportBulkCSV(cables) {
   const hdr=["Cable ID","Color","Label","From device","From iface","From rack","From RU","From face","To device","To iface","To rack","To RU","To face","Media","Connector","Calc","Stock","Unit","Cross-aisle","Missing bridge"];
-  const rows=cables.map(c=>[c.cable_id,c.cable_color?"#"+c.cable_color:"",c.cable_label,c.src_device,c.src_iface,c.src_rack,c.src_ru,c.src_face,c.dst_device,c.dst_iface,c.dst_rack,c.dst_ru,c.dst_face,c.media,c.connector,c.with_slack,c.stock_ft,c.unit??"ft",c.cross_aisle?"Yes":"No",c.missing_bridge?"Yes":"No"]);
+  const rows=cables.map(c=>[c.cable_id,c.cable_color?"#"+c.cable_color:"",c.cable_label,c.src_device,c.src_iface,c.src_rack,c.src_ru,c.src_face,c.dst_device,c.dst_iface,c.dst_rack,c.dst_ru,c.dst_face,c.media,c.connector,c.with_slack,stockOf(c),unitOf(c),c.cross_aisle?"Yes":"No",c.missing_bridge?"Yes":"No"]);
   downloadCSV("cable_bom_bulk.csv",[hdr,...rows]);
 }
 function downloadCSV(filename,rows) {
@@ -148,7 +153,7 @@ function downloadCSV(filename,rows) {
 }
 function printBOM(cables,scopeLabel) {
   const w=window.open("","_blank");
-  const rows=cables.map(c=>`<tr><td>${c.cable_id}</td><td>${c.cable_color?`<span style="display:inline-block;width:16px;height:16px;background:#${c.cable_color};border:1px solid #ccc;vertical-align:middle;"></span>`:""}</td><td>${c.cable_label}</td><td>${c.src_device}<br><small>${c.src_rack} U${c.src_ru}</small></td><td>${c.dst_device}<br><small>${c.dst_rack} U${c.dst_ru}</small></td><td>${c.media}</td><td>${c.connector}</td><td>${c.with_slack} ft</td><td><strong>${c.stock_ft} ${c.unit??"ft"}</strong></td></tr>`).join("");
+  const rows=cables.map(c=>`<tr><td>${c.cable_id}</td><td>${c.cable_color?`<span style="display:inline-block;width:16px;height:16px;background:#${c.cable_color};border:1px solid #ccc;vertical-align:middle;"></span>`:""}</td><td>${c.cable_label}</td><td>${c.src_device}<br><small>${c.src_rack} U${c.src_ru}</small></td><td>${c.dst_device}<br><small>${c.dst_rack} U${c.dst_ru}</small></td><td>${c.media}</td><td>${c.connector}</td><td>${c.with_slack} ft</td><td><strong>${stockText(c)}</strong></td></tr>`).join("");
   w.document.write(`<!DOCTYPE html><html><head><title>Cable BOM</title><style>body{font-family:sans-serif;font-size:12px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:4px 6px}th{background:#f0f0f0}</style></head><body><h2>Cable BOM — ${scopeLabel}</h2><p>${cables.length} cables | ${new Date().toLocaleString()}</p><table><thead><tr><th>ID</th><th>Color</th><th>Label</th><th>From</th><th>To</th><th>Media</th><th>Connector</th><th>Calc</th><th>Stock</th></tr></thead><tbody>${rows}</tbody></table></body></html>`);
   w.document.close();w.print();
 }
@@ -231,7 +236,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
   const [error,setError]     = useState(null);
   const [saving,setSaving]   = useState(false);
   const [saveMsg,setSaveMsg] = useState(null);
-  const [filter,setFilter]   = useState({media:"",connector:"",srcRack:"",dstRack:"",stockFt:""});
+  const [filter,setFilter]   = useState({media:"",connector:"",srcRack:"",dstRack:"",stock:""});
   const [sortKey,setSortKey] = useState("src_rack");
   const [sortDir,setSortDir] = useState(1);
 
@@ -258,7 +263,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
     
     try {
       const lengths={};
-      cables.forEach(c=>{lengths[c.cable_id]=c.stock_ft;});
+      cables.forEach(c=>{lengths[c.cable_id]={length:stockOf(c),unit:unitOf(c)};});
       const res=await fetch("/plugins/cable-calc/bom/",{
         method:"POST",
         headers:{"Content-Type":"application/json","X-CSRFToken":csrfToken()},
@@ -279,7 +284,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
       if (filter.connector&&c.connector!==filter.connector) return false;
       if (filter.srcRack&&!c.src_rack?.toLowerCase().includes(filter.srcRack.toLowerCase())) return false;
       if (filter.dstRack&&!c.dst_rack?.toLowerCase().includes(filter.dstRack.toLowerCase())) return false;
-      if (filter.stockFt&&c.stock_ft!==parseFloat(filter.stockFt)) return false;
+      if (filter.stock&&stockText(c)!==filter.stock) return false;
       return true;
     });
     rows.sort((a,b)=>{const av=a[sortKey]??"",bv=b[sortKey]??"";return typeof av==="number"?(av-bv)*sortDir:String(av).localeCompare(String(bv))*sortDir;});
@@ -289,8 +294,8 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
   const groups = useMemo(()=>{
     const g={};
     displayed.forEach(c=>{
-      const k=`${c.media}|${c.connector}|${c.stock_ft}`;
-      if (!g[k]) g[k]={media:c.media,connector:c.connector,stock_ft:c.stock_ft,unit:c.unit??"ft",count:0};
+      const k=`${c.media}|${c.connector}|${stockText(c)}`;
+      if (!g[k]) g[k]={media:c.media,connector:c.connector,stock:stockText(c),stock_ft:c.stock_ft,count:0};
       g[k].count++;
     });
     return Object.values(g).sort((a,b)=>a.media.localeCompare(b.media)||a.stock_ft-b.stock_ft);
@@ -298,7 +303,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
 
   const mediaOptions     = [...new Set(cables.map(c=>c.media))].sort();
   const connectorOptions = [...new Set(cables.map(c=>c.connector))].sort();
-  const stockFtOptions   = [...new Set(cables.map(c=>c.stock_ft))].sort((a,b)=>a-b);
+  const stockOptions     = [...new Map([...cables].sort((a,b)=>a.stock_ft-b.stock_ft).map(c=>[stockText(c),c])).keys()];
   const thStyle={cursor:"pointer",userSelect:"none",whiteSpace:"nowrap"};
   const missingBridgeCount=cables.filter(c=>c.missing_bridge).length;
   const sort=key=>{setSortDir(sortKey===key?-sortDir:1);setSortKey(key);};
@@ -341,7 +346,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
                   <tr key={i}>
                     <td>{g.media.toUpperCase()}</td>
                     <td><Pill>{g.connector}</Pill></td>
-                    <td className="fw-bold">{g.stock_ft} {g.unit}</td>
+                    <td className="fw-bold">{g.stock}</td>
                     <td className="text-end fw-bold">{g.count}</td>
                   </tr>
                 ))}
@@ -354,7 +359,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
         <div className="d-flex gap-2 flex-wrap mb-2 align-items-end">
           {[["Media","media",mediaOptions.map(m=>({v:m,l:m.toUpperCase()}))],
             ["Connector","connector",connectorOptions.map(c=>({v:c,l:c}))],
-            ["Stock ft","stockFt",stockFtOptions.map(l=>({v:l,l:l+" ft"}))]].map(([label,key,opts])=>(
+            ["Stock","stock",stockOptions.map(l=>({v:l,l}))]].map(([label,key,opts])=>(
             <div key={key}>
               <label className="form-label mb-1" style={{fontSize:11}}>{label}</label>
               <select className="form-select form-select-sm" style={{minWidth:90}}
@@ -373,7 +378,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
           ))}
           {Object.values(filter).some(Boolean)&&(
             <button className="btn btn-outline-secondary btn-sm align-self-end"
-              onClick={()=>setFilter({media:"",connector:"",srcRack:"",dstRack:"",stockFt:""})}>Clear</button>
+              onClick={()=>setFilter({media:"",connector:"",srcRack:"",dstRack:"",stock:""})}>Clear</button>
           )}
         </div>
 
@@ -412,7 +417,7 @@ function BulkBomTab({scopeLabel,cfg,siteId,locationId}) {
                     <td><Badge color={MEDIA[c.media]?.color??"secondary"}>{c.media?.toUpperCase()}</Badge></td>
                     <td><Pill>{c.connector}</Pill></td>
                     <td>{c.with_slack} ft</td>
-                    <td><strong>{c.stock_ft} {c.unit??"ft"}</strong></td>
+                    <td><strong>{stockText(c)}</strong></td>
                     <td>{c.cross_aisle&&<Badge color="warning">X-aisle</Badge>}{c.missing_bridge&&<span className="badge cc-flag-danger" title="No floor plan bridge route between these rows; length is a rough estimate">⚠ no bridge</span>}{c.same_rack&&<Badge color="secondary">same rack</Badge>}{c.error&&<Badge color="danger">err</Badge>}</td>
                   </tr>
                 ))}
