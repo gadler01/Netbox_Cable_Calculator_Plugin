@@ -237,7 +237,10 @@ def _build_bridge_graph(bridges, rack_index=None):
         row_a, row_b = b.get('rowIdA'), b.get('rowIdB')
         if not row_a or not row_b:
             continue
-        length = float(b.get('lengthIn', 0) or 0)
+        # A bridge with no lengthIn uses the cable's configured bridge length
+        # (None here, resolved in _bridge_path/_calc_length).
+        raw_len = b.get('lengthIn')
+        length = None if raw_len in (None, "") else float(raw_len or 0)
         x = float(b.get('x', 0) or 0)
         graph.setdefault(row_a, []).append((row_b, length, x, None))
         graph.setdefault(row_b, []).append((row_a, length, x, None))
@@ -283,7 +286,10 @@ def _bridge_path(graph, row_a, row_b, row_spacing=0.0, bridge_len=0.0):
         for neighbor, length, x, crossed in graph.get(node, []):
             if neighbor in seen:
                 continue
-            weight = length if crossed is None else crossed * (row_spacing + bridge_len)
+            if crossed is None:
+                weight = length if length is not None else bridge_len
+            else:
+                weight = crossed * (row_spacing + bridge_len)
             counter += 1
             heapq.heappush(heap, (dist + weight, counter, neighbor, path + [(length, x, crossed)]))
     return None
@@ -481,7 +487,8 @@ def _calc_length(src, dst, rack_index, cfg, bridge_graphs=None):
 
     cross_aisle = src_rack.get("row") != dst_rack.get("row")
     # Fiber cables only use fiber bridges and copper only copper (bridges
-    # with no pathType carry both), matching the browser Calculator.
+    # with no pathType carry both). routeCable in ui/src/floorplan.js is a
+    # port of this routing; keep the two in step (e2e/check.js compares them).
     bridge_graph = (bridge_graphs or {}).get("fiber" if is_fiber else "copper")
     path = _bridge_path(bridge_graph, src_rack.get("row"), dst_rack.get("row"), row_spacing, bridge_len) \
         if (cross_aisle and bridge_graph) else None
@@ -497,7 +504,7 @@ def _calc_length(src, dst, rack_index, cfg, bridge_graphs=None):
             if crossed is None:
                 horiz += abs(x - cur_x)
                 cur_x = x
-                bridge_total += length
+                bridge_total += length if length is not None else bridge_len
                 real = True
             else:
                 row_travel += crossed * row_spacing

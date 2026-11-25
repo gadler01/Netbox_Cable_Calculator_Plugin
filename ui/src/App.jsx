@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import FloorPlan from "./FloorPlan.jsx";
 import SiteLayout from "./SiteLayout.jsx";
-import { autoLayout, loadLayout, loadBridges, saveLayout, saveBridges, shortestPath, loadFromServer, saveToServer, isCrossLocationBridge, csrfToken } from "./floorplan.js";
+import { autoLayout, loadLayout, loadBridges, saveLayout, saveBridges, routeCable, loadFromServer, saveToServer, isCrossLocationBridge, csrfToken } from "./floorplan.js";
 
 const U_HEIGHT = 1.75;
 const FT_TO_M  = 0.3048;
@@ -71,7 +71,7 @@ const bomColor = (ft,mk) => {
   return r>m.stdLengths[m.stdLengths.length-1]?"danger":m.color;
 };
 
-function calcSegment(src,dst,infra,ifaceKey,layout,bridges) {
+function calcSegment(src,dst,infra,ifaceKey,layout,bridges,racks) {
   const {rackDepth,portDepth,slack} = infra;
   const iface  = IFACE_TYPES[ifaceKey]??IFACE_TYPES["1000base-t"];
   const media  = MEDIA[iface.media]??MEDIA.cat6;
@@ -91,41 +91,30 @@ function calcSegment(src,dst,infra,ifaceKey,layout,bridges) {
     const rec = stdLen(withSlack,iface.media);
     const unit = displayUnit(iface.media);
     const calcDisplay = toDisplay(withSlack,iface.media);
-    return {srcV:vert,dstV:0,horizIn:0,portDepthTot:srcPE+dstPE,rawIn,rawFt,withSlack,rec,unit,calcDisplay,
-            crossAisle:false,rowsCrossed:0,bridgesUsed:[],sameRack:true,pathResult:null,iface,media};
+    return {srcV:vert,dstV:0,horizIn:0,rowTravelIn:0,bridgeIn:0,portDepthTot:srcPE+dstPE,rawIn,rawFt,withSlack,rec,unit,calcDisplay,
+            crossAisle:false,missingBridge:false,bridgesUsed:[],sameRack:true,route:null,iface,media};
   }
 
   // Front and rear exits both run straight up to the rack top, then to the tray.
   const srcPE=portDepth, srcV=ruFromTop(src.ru,src.rackU)+overhead;
   const dstPE=portDepth, dstV=ruFromTop(dst.ru,dst.rackU)+overhead;
 
+  // Same routing as the server BOM (routeCable in floorplan.js mirrors views.py).
   const cablePathType = pathType(iface.media);
   const relevantBridges = (bridges||[]).filter(b=>!b.pathType||b.pathType===cablePathType);
-  let horizIn=0,crossAisle=false,rowsCrossed=0,pathResult=null,bridgesUsed=[];
-
-  if (src.rackId&&dst.rackId&&layout&&layout.rackPositions&&layout.rackPositions[src.rackId]&&layout.rackPositions[dst.rackId]) {
-    pathResult = shortestPath(src.rackId,dst.rackId,layout,relevantBridges,infra);
-    if (pathResult&&pathResult.totalIn!==null) {
-      horizIn=pathResult.totalIn; crossAisle=!pathResult.sameRow; bridgesUsed=pathResult.bridgesUsed??[];
-    } else {
-      horizIn=Math.abs((dst.rackCenterOffset??0)-(src.rackCenterOffset??0)); crossAisle=src.row!==dst.row;
-    }
-  } else {
-    horizIn=Math.abs((dst.rackCenterOffset??0)-(src.rackCenterOffset??0));
-    crossAisle=src.row!==dst.row;
-    rowsCrossed=Math.abs((src.rowIndex??0)-(dst.rowIndex??0));
-  }
+  const route = routeCable(src,dst,layout,relevantBridges,racks,{rowSpacing:infra.rowSpacing,bridgeLen:bridgeLenFor(iface.media,infra)});
+  const {horizIn,rowTravelIn,bridgeIn,crossAisle,missingBridge,bridgesUsed} = route;
 
   const portDepthTot=srcPE+dstPE;
-  const rawIn=srcV+dstV+horizIn+portDepthTot;
+  const rawIn=srcV+dstV+horizIn+rowTravelIn+bridgeIn+portDepthTot;
   const rawFt=rawIn/12;
   const effSlk=media.fixedLength?0:slack*media.slackMult;
   const withSlack=rawFt*(1+effSlk/100);
   const rec=stdLen(withSlack,iface.media);
   const unit=displayUnit(iface.media);
   const calcDisplay=toDisplay(withSlack,iface.media);
-  return {srcV,dstV,horizIn,portDepthTot,rawIn,rawFt,withSlack,rec,unit,calcDisplay,
-          crossAisle,rowsCrossed,bridgesUsed,sameRack:false,pathResult,iface,media};
+  return {srcV,dstV,horizIn,rowTravelIn,bridgeIn,portDepthTot,rawIn,rawFt,withSlack,rec,unit,calcDisplay,
+          crossAisle,missingBridge,bridgesUsed,sameRack:false,route,iface,media};
 }
 
 function infraFromCfg(cfg={}) {
@@ -612,7 +601,7 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
   const addHop=()=>{const l=hops[hops.length-1];setHops([...hops,mkHop("New segment",l.ifaceType)]);};
   const delHop=id=>setHops(hops.filter(h=>h.id!==id));
 
-  const results    = hops.map(h=>calcSegment(h.src,h.dst,infra,h.ifaceType,layout,bridges));
+  const results    = hops.map(h=>calcSegment(h.src,h.dst,infra,h.ifaceType,layout,bridges,activeRacks));
   const totalSlack = results.reduce((s,r)=>s+r.withSlack,0);
   const isHomeRun  = hops.length===1;
   const unresolved = filteredRacks.filter(r=>!r.resolved);
@@ -774,16 +763,18 @@ export default function App({racks=[],devices=[],cfg={},siteTree=[],selected={}}
                       <SegBar label={res.sameRack?"In-rack vertical":"Source vertical to tray"} inches={res.srcV} total={res.rawIn} col="#7F77DD"/>
                       {!res.sameRack&&<SegBar label="Dest vertical from tray" inches={res.dstV} total={res.rawIn} col="#1D9E75"/>}
                       {!res.sameRack&&<SegBar label="Horizontal tray run"     inches={res.horizIn} total={res.rawIn} col="#378ADD"/>}
+                      {res.rowTravelIn>0&&<SegBar label="Aisle crossings (est.)" inches={res.rowTravelIn} total={res.rawIn} col="#D85A30"/>}
+                      {res.bridgeIn>0&&<SegBar label="Bridges"                inches={res.bridgeIn} total={res.rawIn} col="#BA7517"/>}
                       <SegBar label="Port depth both ends" inches={res.portDepthTot} total={res.rawIn} col="#888780"/>
-                      {res.pathResult&&res.pathResult.path&&!res.sameRack&&(
+                      {res.route&&res.route.path&&!res.sameRack&&(
                         <div className="mt-2 pt-2 border-top" style={{fontSize:11,color:"#6c757d"}}>
                           <strong>Tray path ({pathType(res.iface.media)}):</strong>{" "}
-                          {res.pathResult.path.map((seg,i)=>(
-                            <span key={i}>{seg.type==="horiz"?`${(seg.dist/12).toFixed(1)} ft`:<span className="badge bg-warning text-dark mx-1">{seg.label} ({(seg.dist/12).toFixed(1)} ft)</span>}{i<res.pathResult.path.length-1?" → ":""}</span>
+                          {res.route.path.map((seg,i)=>(
+                            <span key={i}>{seg.type==="horiz"?`${(seg.dist/12).toFixed(1)} ft`:<span className="badge bg-warning text-dark mx-1">{seg.label} ({(seg.dist/12).toFixed(1)} ft)</span>}{i<res.route.path.length-1?" → ":""}</span>
                           ))}
                         </div>
                       )}
-                      {res.pathResult?.error&&<div className="alert alert-warning py-1 mt-2 mb-0" style={{fontSize:11}}>Path: {res.pathResult.error}</div>}
+                      {res.missingBridge&&<div className="alert alert-warning py-1 mt-2 mb-0" style={{fontSize:11}}><span className="cc-flag-danger" style={{color:"#d63939",fontWeight:600}}>⚠ No bridge route</span> between these rows for {pathType(res.iface.media)}. The length is a rough estimate; add a bridge in the floor plan.</div>}
                       <div className="d-flex justify-content-between mt-2 pt-2 border-top" style={{fontSize:12}}>
                         <span className="text-muted">Raw {res.rawFt.toFixed(2)} ft {res.media.fixedLength?"(no slack)":`+ ${(infra.slack*res.media.slackMult).toFixed(0)}% slack`}</span>
                         <span className="fw-bold">{res.calcDisplay} {res.unit} <Badge color={bc}>{res.rec} {res.unit} stock</Badge></span>

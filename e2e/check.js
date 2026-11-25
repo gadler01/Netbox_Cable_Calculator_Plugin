@@ -5,11 +5,12 @@
 // The test user needs NetBox view permission on sites, locations, racks,
 // devices and cables (and nothing else), or site 105 is "not found".
 //
-// Read-only except for "Calculate all cables", which refreshes the BOM
-// cache file. Never edits rows, drags racks or saves lengths to NetBox.
+// Read-only except for "Calculate all cables" and the parity check, which
+// refresh BOM cache files. Never edits rows, drags racks or saves lengths to NetBox.
 const fs = require("fs");
 const path = require("path");
 const { chromium } = require("playwright");
+const { compareRouting } = require("./parity");
 
 const SESSION_FILE = process.argv[2];
 const BASE = process.argv[3] || "https://nbupg";
@@ -165,7 +166,12 @@ const check = (name, ok, detail = "") => {
 
   check("a site the user can't view is not found", saves.hiddenSite === 404, `HTTP ${saves.hiddenSite}`);
 
-  // 7. No errors along the way
+  // 7. Browser Calculator routing matches the server BOM for every cable
+  const parity = await compareRouting(page, 105);
+  check("Calculator routing matches the server BOM (site 105)", parity.compared >= 1000 && parity.mismatches.length === 0,
+        `${parity.compared} compared, ${parity.mismatches.length} differ${parity.mismatches.length ? ": " + parity.mismatches.slice(0, 2).join(" | ") : ""}`);
+
+  // 8. No errors along the way
   check("no page errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
   // The browser logs the 3 deliberate 403 saves and the 1 deliberate 404 above as console errors.
   const deliberate = t => /status of 40[34]/.test(t);
