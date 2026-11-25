@@ -10,6 +10,8 @@ A NetBox 4.x plugin (`netbox_cable_calc`) that calculates cable lengths for data
 
 - `netbox_cable_calc/__init__.py`: plugin config and default settings (aisle width, overheads, bridge length, slack).
 - `netbox_cable_calc/views.py`: all backend logic (rack index, length math, bridge routing, BOM, layout files, permissions, API views).
+- `netbox_cable_calc/navigation.py`: the "Cable Length Calculator" link under NetBox's Plugins menu (hidden without `dcim.view_site`).
+- `netbox_cable_calc/template_content.py`: the "Cable calculator" button on site, location and rack pages; opens the plugin scoped to that site/location.
 - `netbox_cable_calc/urls.py`: routes `""` (page), `bom/`, `layout/`, `racks/`, `devices/`.
 - `netbox_cable_calc/templates/netbox_cable_calc/calculator.html`: injects `window.NETBOX_*` data (including the CSRF token) and loads the bundle and `calculator.css`. Holds the `?v=N` cache-busters for both.
 - `netbox_cable_calc/static/netbox_cable_calc/`: `calculator.bundle.js` (built from `ui/`, never edit by hand) and `calculator.css` (edit directly).
@@ -53,7 +55,7 @@ sudo systemctl restart netbox netbox-rq
 
 ### Browser checks (`e2e/`)
 
-`e2e/check.js` drives the real page on the dev NetBox with headless Chromium (Playwright 1.56, which still supports the server's Node 18). It checks the bundle version, the site and location floor plans, scope switching, the Suite 15 BOM, the missing-bridge flag, CSRF and permissions, that a site the user can't view returns 404, that the browser Calculator's routing matches the server BOM for every site 105 cable (`parity.js`), and that there are no errors.
+`e2e/check.js` drives the real page on the dev NetBox with headless Chromium (Playwright 1.56, which still supports the server's Node 18). It checks the bundle version, the site and location floor plans, scope switching, the Suite 15 BOM, the missing-bridge flag, CSRF and permissions, that a site the user can't view returns 404, that the browser Calculator's routing matches the server BOM for every site 105 cable (`parity.js`), that there are no errors, and (last, since it visits NetBox's own pages) the Plugins menu link and the site/location page buttons.
 
 `node parity.js <session-file> [site-id]` runs just the routing comparison for any site. It loads `ui/src/floorplan.js` straight from the repo, so it tests your working copy before you build or deploy. Screenshots go to `e2e/out/` (gitignored).
 
@@ -126,7 +128,9 @@ Recent work, in order:
 
 17. Stock sizes use the Calculator's rules everywhere (2026-11-25, bundle `v=26`, user's choice): fiber, DAC and AOC are sized in metres from the metre lists, copper in feet; anything longer than the biggest listed size rounds up to the next whole unit. `_std_len` returns `(stock, unit, stock_ft)` and BOM rows now have `stock`, `unit` and `stock_ft` (feet equivalent, used for sorting). Before, the server compared feet against the metre lists and labelled the result in feet, and rounded long copper to `round(ft + 1)`. "Save lengths to NetBox" now sends `{length, unit}` and NetBox stores fiber lengths in metres (a plain number is still read as feet). Site 105: 720 OM4 cables now in metres; total stock went from 72,336 ft to the equivalent of 80,244 ft, because metre sizes are coarser (a 26 m run takes a 30 m cable). After deploying, clear the `*_bom_cache.json` files: older cached rows have no `unit` (the UI falls back to feet for them).
 
-**Status:** `v=26` is deployed on the dev NetBox. Nothing is merged to `main` yet.
+18. Ways into the plugin from NetBox (2026-11-25): a "Cable Length Calculator" link under the Plugins menu (`navigation.py`, needs `dcim.view_site`), and a "Cable calculator" button on site, location and rack detail pages (`template_content.py`). The button opens the plugin scoped to that site, or that location (a rack uses its own location). It's hidden when the user can't view the site, and drops the location if they can't view that. Backend-only: no bundle change. Tested read-only in NetBox's shell for a superuser, the e2e user and a tenant-scoped user (who doesn't see it on site 105 but does on their own site 113). `check.js` gains 4 checks for the menu link and buttons.
+
+**Status:** `v=26` (stock sizes) is deployed. Item 18 (menu link and buttons) is deployed too. Nothing is merged to `main` yet.
 
 **Before merging to `main`:** nothing blocking is open; see Known issues for smaller items.
 

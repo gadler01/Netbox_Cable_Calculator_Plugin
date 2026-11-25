@@ -193,6 +193,25 @@ const check = (name, ok, detail = "") => {
   const unexpected = failedRequests.filter(r => !expectedFail(r));
   check("no failed plugin requests (besides the deliberate 403s and 404)", unexpected.length === 0, unexpected.slice(0, 3).join(" | "));
 
+  // 9. Jump-off points from NetBox itself (runs after the error checks,
+  // because it visits NetBox's own pages).
+  await page.goto(`${BASE}/dcim/sites/105/`, { waitUntil: "networkidle" });
+  const menuLink = await page.$$eval("a[href='/plugins/cable-calc/']", els => els.map(e => e.textContent.trim()));
+  check("NetBox menu has a Cable Length Calculator link", menuLink.some(t => t.includes("Cable Length Calculator")), menuLink.join(", ") || "none");
+  const button = page.locator("a.btn", { hasText: "Cable calculator" });
+  const buttonHref = await button.first().getAttribute("href").catch(() => null);
+  check("site page has a Cable calculator button for that site", buttonHref === "/plugins/cable-calc/?site_id=105", buttonHref || "none");
+  if (buttonHref) {
+    await button.first().click();
+    await page.waitForLoadState("networkidle");
+    const opened = await page.evaluate(() => (window.NETBOX_SELECTED || {}).site_id);
+    check("the button opens the calculator on that site", page.url().endsWith("/plugins/cable-calc/?site_id=105") && opened === 105, `${page.url()} site=${opened}`);
+  }
+  await page.goto(`${BASE}/dcim/locations/125/`, { waitUntil: "networkidle" });
+  const locHref = await page.locator("a.btn", { hasText: "Cable calculator" }).first().getAttribute("href").catch(() => null);
+  check("location page button opens that location", locHref === "/plugins/cable-calc/?site_id=105&location_id=125", locHref || "none");
+  await shot("7-location-page-button", false);
+
   await browser.close();
   const failed = results.filter(r => !r.ok).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed. Screenshots in ${OUT}`);
